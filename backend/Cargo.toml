@@ -1,0 +1,22 @@
+[package]
+name = "dev_caloptreyx_eggchanger"
+description = "Let users switch their server to another admin-approved egg."
+authors = ["Caloptreyx"]
+version = "1.0.0"
+edition = { workspace = true }
+
+[dependencies]
+shared = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+compact_str = { workspace = true }
+axum = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+garde = { workspace = true }
+anyhow = { workspace = true }
+indexmap = { workspace = true }
