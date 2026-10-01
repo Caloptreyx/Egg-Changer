@@ -1,4 +1,4 @@
-use crate::settings::{EggChangerSettingsData, EggRule};
+use crate::settings::{EggChangerSettingsData, EggRule, EggRuleOptions};
 use axum::{extract::Path, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use shared::{
@@ -25,25 +25,21 @@ pub struct EggItem {
 
 #[derive(ToSchema, Serialize)]
 pub struct SettingsResponse {
-    pub apply_allocation_deployment: bool,
     pub egg_rules: Vec<EggRule>,
     pub eggs: Vec<EggItem>,
-}
-
-#[derive(ToSchema, Deserialize)]
-pub struct UpdateSettingsPayload {
-    pub apply_allocation_deployment: bool,
 }
 
 #[derive(ToSchema, Deserialize)]
 pub struct EggRulePayload {
     pub eggs: Vec<uuid::Uuid>,
     pub allowed_eggs: Vec<uuid::Uuid>,
+    #[serde(default)]
+    pub options: EggRuleOptions,
 }
 
 impl EggRulePayload {
-    /// Deduplicated `(eggs, allowed_eggs)`, or an error response when either side is empty.
-    fn into_lists(self) -> Result<(Vec<uuid::Uuid>, Vec<uuid::Uuid>), ApiResponse> {
+    /// The rule with deduplicated egg lists, or an error response when either side is empty.
+    fn into_rule(self, id: uuid::Uuid) -> Result<EggRule, ApiResponse> {
         fn dedup(list: Vec<uuid::Uuid>) -> Vec<uuid::Uuid> {
             let mut out = Vec::with_capacity(list.len());
             for uuid in list {
@@ -61,7 +57,12 @@ impl EggRulePayload {
             .with_status(StatusCode::BAD_REQUEST));
         }
 
-        Ok((dedup(self.eggs), dedup(self.allowed_eggs)))
+        Ok(EggRule {
+            id,
+            eggs: dedup(self.eggs),
+            allowed_eggs: dedup(self.allowed_eggs),
+            options: self.options,
+        })
     }
 }
 
@@ -101,48 +102,14 @@ mod get_settings {
 
         let settings = state.settings.get().await?;
         let ext_settings: &EggChangerSettingsData = settings.find_extension_settings()?;
-        let apply_allocation_deployment = ext_settings.apply_allocation_deployment;
         let egg_rules = ext_settings.egg_rules.clone();
         drop(settings);
 
         ApiResponse::new_serialized(SettingsResponse {
-            apply_allocation_deployment,
             egg_rules,
             eggs: get_all_eggs(&state).await?,
         })
         .ok()
-    }
-}
-
-mod put_settings {
-    use super::*;
-
-    #[utoipa::path(put, path = "/settings", responses(
-        (status = OK, body = inline(EmptyResponse)),
-    ), request_body = inline(UpdateSettingsPayload))]
-    pub async fn route(
-        state: GetState,
-        permissions: GetPermissionManager,
-        activity_logger: GetAdminActivityLogger,
-        shared::Payload(data): shared::Payload<UpdateSettingsPayload>,
-    ) -> ApiResponseResult {
-        permissions.has_admin_permission("extensions.eggchanger.write")?;
-
-        let mut settings = state.settings.get_mut().await?;
-        let ext_settings: &mut EggChangerSettingsData = settings.find_mut_extension_settings()?;
-        ext_settings.apply_allocation_deployment = data.apply_allocation_deployment;
-        settings.save().await?;
-
-        activity_logger
-            .log(
-                "settings:eggchanger:update",
-                serde_json::json!({
-                    "apply_allocation_deployment": data.apply_allocation_deployment,
-                }),
-            )
-            .await;
-
-        ApiResponse::new_serialized(EmptyResponse {}).ok()
     }
 }
 
@@ -160,12 +127,7 @@ mod post_egg_rule {
     ) -> ApiResponseResult {
         permissions.has_admin_permission("extensions.eggchanger.write")?;
 
-        let (eggs, allowed_eggs) = data.into_lists()?;
-        let rule = EggRule {
-            id: uuid::Uuid::new_v4(),
-            eggs,
-            allowed_eggs,
-        };
+        let rule = data.into_rule(uuid::Uuid::new_v4())?;
 
         let mut settings = state.settings.get_mut().await?;
         let ext_settings: &mut EggChangerSettingsData = settings.find_mut_extension_settings()?;
@@ -179,6 +141,7 @@ mod post_egg_rule {
                     "rule_id": rule.id,
                     "eggs": rule.eggs,
                     "allowed_eggs": rule.allowed_eggs,
+                    "options": rule.options,
                 }),
             )
             .await;
@@ -205,7 +168,7 @@ mod put_egg_rule {
     ) -> ApiResponseResult {
         permissions.has_admin_permission("extensions.eggchanger.write")?;
 
-        let (eggs, allowed_eggs) = data.into_lists()?;
+        let updated = data.into_rule(rule_id)?;
 
         let mut settings = state.settings.get_mut().await?;
         let ext_settings: &mut EggChangerSettingsData = settings.find_mut_extension_settings()?;
@@ -215,8 +178,7 @@ mod put_egg_rule {
                 .with_status(StatusCode::NOT_FOUND)
                 .ok();
         };
-        rule.eggs = eggs.clone();
-        rule.allowed_eggs = allowed_eggs.clone();
+        *rule = updated.clone();
         settings.save().await?;
 
         activity_logger
@@ -224,8 +186,9 @@ mod put_egg_rule {
                 "settings:eggchanger:egg-rule.update",
                 serde_json::json!({
                     "rule_id": rule_id,
-                    "eggs": eggs,
-                    "allowed_eggs": allowed_eggs,
+                    "eggs": updated.eggs,
+                    "allowed_eggs": updated.allowed_eggs,
+                    "options": updated.options,
                 }),
             )
             .await;
@@ -275,7 +238,6 @@ mod delete_egg_rule {
 pub fn router(state: &State) -> OpenApiRouter<State> {
     OpenApiRouter::new()
         .routes(routes!(get_settings::route))
-        .routes(routes!(put_settings::route))
         .routes(routes!(post_egg_rule::route))
         .routes(routes!(put_egg_rule::route))
         .routes(routes!(delete_egg_rule::route))

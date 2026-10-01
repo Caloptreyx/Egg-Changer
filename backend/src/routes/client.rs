@@ -1,4 +1,7 @@
-use crate::{allocations, settings::EggChangerSettingsData};
+use crate::{
+    allocations,
+    settings::{EggChangerSettingsData, EggRuleOptions},
+};
 use axum::http::StatusCode;
 use garde::Validate;
 use serde::{Deserialize, Serialize};
@@ -47,6 +50,8 @@ pub struct TargetEgg {
     /// Additional allocations the egg's deployment rules need. The server's existing allocations
     /// are reused where they fit, so fewer may actually be assigned.
     pub deployment_allocations: usize,
+    /// Options of the rules allowing this switch.
+    pub options: EggRuleOptions,
 }
 
 #[derive(ToSchema, Serialize)]
@@ -67,10 +72,17 @@ pub struct ChangeEggPayload {
     #[garde(length(chars, min = 2, max = 255))]
     #[schema(min_length = 2, max_length = 255)]
     pub image: Option<compact_str::CompactString>,
+    /// Keep the current startup command instead of using one of the new egg's. Not allowed when
+    /// the rule forces a startup update.
+    #[serde(default)]
+    #[garde(skip)]
+    pub keep_startup: bool,
+    /// Forced when the rule forces a reinstall.
     #[serde(default)]
     #[garde(skip)]
     pub reinstall: bool,
-    /// Wipe all server files before reinstalling. Requires `reinstall`.
+    /// Wipe all server files before reinstalling. Requires reinstalling; forced when the rule
+    /// forces a truncate.
     #[serde(default)]
     #[garde(skip)]
     pub truncate_directory: bool,
@@ -132,9 +144,9 @@ mod get_index {
         let config = config(&state).await?;
 
         let mut eggs = Vec::new();
-        for egg_uuid in config.allowed_targets(server.egg.uuid) {
+        for target in config.targets(server.egg.uuid) {
             // rules may still reference deleted eggs
-            let Some(egg) = NestEgg::by_uuid_optional(&state.database, egg_uuid).await? else {
+            let Some(egg) = NestEgg::by_uuid_optional(&state.database, target.egg).await? else {
                 continue;
             };
             let nest = egg.nest.fetch_cached(&state.database).await?;
@@ -152,7 +164,7 @@ mod get_index {
                     .config_startup
                     .as_ref()
                     .is_some_and(|c| c.allow_custom_startup_command),
-                deployment_allocations: if config.apply_allocation_deployment {
+                deployment_allocations: if target.options.reassign_allocations {
                     configuration
                         .config_allocations
                         .as_ref()
@@ -160,6 +172,7 @@ mod get_index {
                 } else {
                     0
                 },
+                options: target.options,
             });
         }
 
@@ -192,9 +205,6 @@ mod post_change {
         shared::Payload(data): shared::Payload<ChangeEggPayload>,
     ) -> ApiResponseResult {
         permissions.has_server_permission("eggchanger.change")?;
-        if data.reinstall {
-            permissions.has_server_permission("settings.install")?;
-        }
 
         if let Err(errors) = shared::utils::validate_data(&data) {
             return ApiResponse::new_serialized(ApiError::new_strings_value(errors))
@@ -202,24 +212,48 @@ mod post_change {
                 .ok();
         }
 
-        if data.truncate_directory && !data.reinstall {
+        let config = config(&state).await?;
+        let Some(options) = config
+            .targets(server.egg.uuid)
+            .into_iter()
+            .find(|t| t.egg == data.egg_uuid)
+            .map(|t| t.options)
+        else {
+            return ApiResponse::error("This server cannot switch to the selected egg.")
+                .with_status(StatusCode::FORBIDDEN)
+                .ok();
+        };
+
+        // A reinstall the rule forces is part of the switch an admin allowed; one the user opts
+        // into needs the reinstall permission like the core reinstall does.
+        if data.reinstall && !options.force_reinstall {
+            permissions.has_server_permission("settings.install")?;
+        }
+        let reinstall = data.reinstall || options.force_reinstall;
+        let truncate_directory = reinstall && (data.truncate_directory || options.force_truncate);
+
+        if data.truncate_directory && !reinstall {
             return ApiResponse::error("Files can only be wiped when reinstalling.")
                 .with_status(StatusCode::BAD_REQUEST)
                 .ok();
         }
-        if data.reinstall && server.status.is_some() {
+        if data.keep_startup && options.force_startup_update {
+            return ApiResponse::error(
+                "Switching to the selected egg always updates the startup command.",
+            )
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok();
+        }
+        if data.keep_startup && data.startup.is_some() {
+            return ApiResponse::error(
+                "A startup command can't be given when keeping the current one.",
+            )
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok();
+        }
+        if reinstall && server.status.is_some() {
             return ApiResponse::error("The server cannot be reinstalled in its current state.")
                 .with_status(StatusCode::CONFLICT)
-                .ok();
-        }
-
-        let config = config(&state).await?;
-        if !config
-            .allowed_targets(server.egg.uuid)
-            .contains(&data.egg_uuid)
-        {
-            return ApiResponse::error("This server cannot switch to the selected egg.")
-                .with_status(StatusCode::FORBIDDEN)
                 .ok();
         }
 
@@ -231,6 +265,7 @@ mod post_change {
         let egg_configuration = egg.configuration(&state.database).await?;
 
         let startup = match data.startup {
+            _ if data.keep_startup => server.startup.clone(),
             Some(command) => {
                 let predefined = egg.startup_commands.values().any(|c| *c == command);
                 let custom_allowed = egg_configuration
@@ -281,13 +316,11 @@ mod post_change {
             name: server.egg.name.clone(),
         };
 
-        let deployment = if config.apply_allocation_deployment {
-            match &egg_configuration.config_allocations {
-                Some(c) => Some(allocations::resolve(&state, &server, &c.deployment).await?),
-                None => None,
+        let deployment = match &egg_configuration.config_allocations {
+            Some(c) if options.reassign_allocations => {
+                Some(allocations::resolve(&state, &server, &c.deployment).await?)
             }
-        } else {
-            None
+            _ => None,
         };
 
         let egg_variables = NestEggVariable::all_by_egg_uuid(&state.database, egg.uuid).await?;
@@ -386,8 +419,10 @@ mod post_change {
                     "to_egg": { "uuid": egg.uuid, "name": egg.name },
                     "startup": startup,
                     "image": image,
-                    "reinstall": data.reinstall,
-                    "truncate_directory": data.truncate_directory,
+                    "reinstall": reinstall,
+                    "truncate_directory": truncate_directory,
+                    "kept_startup": data.keep_startup,
+                    "options": options,
                     "allocations": assigned
                         .iter()
                         .map(|a| format!("{}:{}", a.ip, a.port))
@@ -399,7 +434,7 @@ mod post_change {
         // re-fetch so the node gets the new nest, allocations and variables
         let server = Server::by_uuid(&state.database, server.uuid).await?;
 
-        if data.reinstall {
+        if reinstall {
             if let Err(err) = server.clone().sync(&state.database).await {
                 tracing::warn!(server = %server.uuid, "failed to sync server after egg change: {err:#}");
                 return ApiResponse::error(
@@ -413,7 +448,7 @@ mod post_change {
                 .install_with_options(
                     &state,
                     ServerInstallOptions {
-                        truncate_directory: data.truncate_directory,
+                        truncate_directory,
                         ..Default::default()
                     },
                 )
@@ -427,7 +462,7 @@ mod post_change {
                 uuid: egg.uuid,
                 name: egg.name,
             },
-            reinstalling: data.reinstall,
+            reinstalling: reinstall,
             allocations: assigned,
         })
         .ok()

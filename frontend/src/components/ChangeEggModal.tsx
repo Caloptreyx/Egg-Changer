@@ -31,11 +31,16 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
   const [eggUuid, setEggUuid] = useState<string | null>(null);
   const [startup, setStartup] = useState('');
   const [image, setImage] = useState('');
+  const [updateStartup, setUpdateStartup] = useState(true);
   const [reinstall, setReinstall] = useState(false);
   const [truncateDirectory, setTruncateDirectory] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const egg = index.eggs.find((e) => e.uuid === eggUuid) ?? null;
+  // options the egg's rules force override the user's choices
+  const updatingStartup = updateStartup || !!egg?.options.force_startup_update;
+  const reinstalling = reinstall || !!egg?.options.force_reinstall;
+  const wiping = reinstalling && (truncateDirectory || !!egg?.options.force_truncate);
 
   const eggOptions = useMemo(() => {
     const groups = new Map<string, { value: string; label: string }[]>();
@@ -58,6 +63,7 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
 
   const reset = () => {
     selectEgg(null);
+    setUpdateStartup(true);
     setReinstall(false);
     setTruncateDirectory(false);
   };
@@ -75,10 +81,11 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
       setSubmitting(true);
       const result = await changeEgg(server.uuid, {
         egg_uuid: egg.uuid,
-        startup,
+        startup: updatingStartup ? startup : null,
         image,
-        reinstall,
-        truncate_directory: reinstall && truncateDirectory,
+        keep_startup: !updatingStartup,
+        reinstall: reinstalling,
+        truncate_directory: wiping,
       });
 
       addToast(
@@ -128,7 +135,16 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           </Text>
         )}
 
-        {egg && (egg.startup_commands.length > 1 || egg.allow_custom_startup_command) && (
+        {egg && !egg.options.force_startup_update && (
+          <Switch
+            label='Update the startup command'
+            description='Turn off to keep the current startup command.'
+            checked={updateStartup}
+            onChange={(e) => setUpdateStartup(e.currentTarget.checked)}
+          />
+        )}
+
+        {egg && updatingStartup && (egg.startup_commands.length > 1 || egg.allow_custom_startup_command) && (
           <Select
             label={egg.allow_custom_startup_command ? 'Startup preset' : 'Startup command'}
             data={egg.startup_commands.map((c) => ({ value: c.value, label: c.name }))}
@@ -138,7 +154,7 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           />
         )}
 
-        {egg?.allow_custom_startup_command && (
+        {egg?.allow_custom_startup_command && updatingStartup && (
           <TextArea
             label='Startup command'
             autosize
@@ -157,11 +173,16 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           />
         )}
 
-        {canReinstall && (
+        {egg && (canReinstall || egg.options.force_reinstall) && (
           <Switch
             label='Reinstall the server'
-            description="Runs the new egg's install script after switching."
-            checked={reinstall}
+            description={
+              egg.options.force_reinstall
+                ? `Always done when switching to ${egg.name}.`
+                : "Runs the new egg's install script after switching."
+            }
+            checked={reinstalling}
+            disabled={egg.options.force_reinstall}
             onChange={(e) => {
               setReinstall(e.currentTarget.checked);
               if (!e.currentTarget.checked) setTruncateDirectory(false);
@@ -169,12 +190,17 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           />
         )}
 
-        {reinstall && (
+        {egg && reinstalling && (
           <Switch
             color='red'
             label='Wipe all files before reinstalling'
-            description='Deletes every file of this server. This cannot be undone.'
-            checked={truncateDirectory}
+            description={
+              egg.options.force_truncate
+                ? `Always done when reinstalling into ${egg.name}. This cannot be undone.`
+                : 'Deletes every file of this server. This cannot be undone.'
+            }
+            checked={wiping}
+            disabled={egg.options.force_truncate}
             onChange={(e) => setTruncateDirectory(e.currentTarget.checked)}
           />
         )}
@@ -190,7 +216,9 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
                   they fit.
                 </List.Item>
               )}
-              {!reinstall && <List.Item>Files are kept, the new egg's install script is not run.</List.Item>}
+              {!updatingStartup && <List.Item>The current startup command is kept.</List.Item>}
+              {!reinstalling && <List.Item>Files are kept, the new egg's install script is not run.</List.Item>}
+              {wiping && <List.Item>All files of this server are deleted before reinstalling.</List.Item>}
             </List>
           </Alert>
         )}
@@ -202,7 +230,7 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           <Button
             color='red'
             loading={submitting}
-            disabled={!egg || startup.trim() === '' || image === ''}
+            disabled={!egg || (updatingStartup && startup.trim() === '') || image === ''}
             onClick={submit}
           >
             Change Egg

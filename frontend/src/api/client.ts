@@ -9,22 +9,26 @@ export interface EggItem {
   nest_name: string;
 }
 
+export interface EggRuleOptions {
+  force_startup_update: boolean;
+  force_reinstall: boolean;
+  force_truncate: boolean;
+  reassign_allocations: boolean;
+}
+
 export interface EggRule {
   id: string;
   eggs: string[];
   allowed_eggs: string[];
+  options: EggRuleOptions;
 }
 
 export interface AdminSettingsResponse {
-  apply_allocation_deployment: boolean;
   egg_rules: EggRule[];
   eggs: EggItem[];
 }
 
-export interface EggRulePayload {
-  eggs: string[];
-  allowed_eggs: string[];
-}
+export type EggRulePayload = Omit<EggRule, 'id'>;
 
 export interface NamedValue {
   name: string;
@@ -41,6 +45,7 @@ export interface TargetEgg {
   docker_images: NamedValue[];
   allow_custom_startup_command: boolean;
   deployment_allocations: number;
+  options: EggRuleOptions;
 }
 
 export interface EggChangerIndex {
@@ -50,8 +55,9 @@ export interface EggChangerIndex {
 
 export interface ChangeEggPayload {
   egg_uuid: string;
-  startup: string;
+  startup: string | null;
   image: string;
+  keep_startup: boolean;
   reinstall: boolean;
   truncate_directory: boolean;
 }
@@ -65,10 +71,6 @@ export interface ChangeEggResponse {
 export async function getAdminSettings(): Promise<AdminSettingsResponse> {
   const { data } = await axiosInstance.get(`${ADMIN_BASE}/settings`);
   return data;
-}
-
-export async function updateAdminSettings(payload: { apply_allocation_deployment: boolean }): Promise<void> {
-  await axiosInstance.put(`${ADMIN_BASE}/settings`, payload);
 }
 
 export async function createEggRule(payload: EggRulePayload): Promise<EggRule> {

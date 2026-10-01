@@ -55,7 +55,7 @@ impl Extension for ExtensionStruct {
                     description: "Permissions for the Egg Changer extension.",
                     permissions: IndexMap::from([(
                         "change",
-                        "Allows switching this server to another admin-approved egg. Reinstalling while switching also needs the reinstall permission.",
+                        "Allows switching this server to another admin-approved egg, including any reinstall or file wipe the admin's rules force. Choosing to reinstall also needs the reinstall permission.",
                     )]),
                 },
             )

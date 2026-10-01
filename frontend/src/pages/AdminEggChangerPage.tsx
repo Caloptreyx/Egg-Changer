@@ -1,6 +1,6 @@
 import { faArrowRight, faEdit, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Badge, Card, Group, SimpleGrid, Stack, Switch, Table, Text, Title } from '@mantine/core';
+import { Badge, Card, Divider, Group, SimpleGrid, Stack, Switch, Table, Text, Title } from '@mantine/core';
 import { useEffect, useMemo, useState } from 'react';
 import { httpErrorToHuman } from '@/api/axios.ts';
 import AlertError from '@/elements/alerts/AlertError.tsx';
@@ -15,11 +15,47 @@ import {
   createEggRule,
   deleteEggRule,
   type EggRule,
+  type EggRuleOptions,
   getAdminSettings,
-  updateAdminSettings,
   updateEggRule,
 } from '../api/client.ts';
 import EggTreePicker from '../components/EggTreePicker.tsx';
+
+const DEFAULT_OPTIONS: EggRuleOptions = {
+  force_startup_update: false,
+  force_reinstall: false,
+  force_truncate: false,
+  reassign_allocations: true,
+};
+
+const OPTION_FIELDS: { key: keyof EggRuleOptions; label: string; badge: string; description: string }[] = [
+  {
+    key: 'force_startup_update',
+    label: 'Force Update Startup',
+    badge: 'Startup',
+    description:
+      "The startup command is always replaced by one of the new egg's. Otherwise users may keep their current one.",
+  },
+  {
+    key: 'force_reinstall',
+    label: 'Force Reinstall',
+    badge: 'Reinstall',
+    description: "The server is always reinstalled with the new egg's install script.",
+  },
+  {
+    key: 'force_truncate',
+    label: 'Force a truncate of files when reinstalling',
+    badge: 'Wipe files',
+    description: 'Delete all files before reinstalling.',
+  },
+  {
+    key: 'reassign_allocations',
+    label: 'Reassign Allocations',
+    badge: 'Allocations',
+    description:
+      'If the new egg has different allocation requirements than the old one, automatically reassign allocations to fit the new egg (Egg Configuration System). The primary allocation is kept and allocations the server already has are reused where they fit.',
+  },
+];
 
 export default function AdminEggChangerPage() {
   const { addToast } = useToast();
@@ -28,7 +64,6 @@ export default function AdminEggChangerPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [savingDeployment, setSavingDeployment] = useState(false);
 
   const [ruleModalOpen, setRuleModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<EggRule | null>(null);
@@ -36,6 +71,7 @@ export default function AdminEggChangerPage() {
   const [submittingRule, setSubmittingRule] = useState(false);
   const [sourceEggs, setSourceEggs] = useState<string[]>([]);
   const [targetEggs, setTargetEggs] = useState<string[]>([]);
+  const [ruleOptions, setRuleOptions] = useState<EggRuleOptions>(DEFAULT_OPTIONS);
 
   const load = async () => {
     try {
@@ -61,30 +97,18 @@ export default function AdminEggChangerPage() {
     return map;
   }, [settings?.eggs]);
 
-  const toggleDeployment = async (enabled: boolean) => {
-    try {
-      setSavingDeployment(true);
-      await updateAdminSettings({ apply_allocation_deployment: enabled });
-      setSettings((prev) => (prev ? { ...prev, apply_allocation_deployment: enabled } : prev));
-      addToast('Settings saved.', 'success');
-    } catch (err) {
-      addToast(httpErrorToHuman(err), 'error');
-    } finally {
-      setSavingDeployment(false);
-    }
-  };
-
   const openRuleModal = (rule: EggRule | null) => {
     setEditingRule(rule);
     setSourceEggs(rule?.eggs ?? []);
     setTargetEggs(rule?.allowed_eggs ?? []);
+    setRuleOptions(rule?.options ?? DEFAULT_OPTIONS);
     setRuleModalOpen(true);
   };
 
   const saveRule = async () => {
     try {
       setSubmittingRule(true);
-      const payload = { eggs: sourceEggs, allowed_eggs: targetEggs };
+      const payload = { eggs: sourceEggs, allowed_eggs: targetEggs, options: ruleOptions };
       if (editingRule) {
         await updateEggRule(editingRule.id, payload);
         addToast('Egg rule updated.', 'success');
@@ -162,21 +186,6 @@ export default function AdminEggChangerPage() {
 
       <Card padding='lg' radius='md' withBorder>
         <Stack gap='md'>
-          <Title order={4} fw={600}>
-            Allocations
-          </Title>
-          <Switch
-            disabled={!canWrite || savingDeployment}
-            label="Apply the new egg's allocation deployment rules"
-            description="When a server switches, it keeps its primary allocation and gets any additional allocations the new egg's configuration asks for (for example a query or Bedrock port). Allocations the server already has are reused where they fit, and the ports are written to the egg's variables."
-            checked={settings.apply_allocation_deployment}
-            onChange={(e) => toggleDeployment(e.currentTarget.checked)}
-          />
-        </Stack>
-      </Card>
-
-      <Card padding='lg' radius='md' withBorder>
-        <Stack gap='md'>
           <Group justify='space-between' align='center'>
             <div>
               <Title order={4} fw={600}>
@@ -206,6 +215,7 @@ export default function AdminEggChangerPage() {
                     <Table.Th>Servers on</Table.Th>
                     <Table.Th w={32} />
                     <Table.Th>Can switch to</Table.Th>
+                    <Table.Th>Options</Table.Th>
                     {canWrite && <Table.Th w={110}>Actions</Table.Th>}
                   </Table.Tr>
                 </Table.Thead>
@@ -217,6 +227,15 @@ export default function AdminEggChangerPage() {
                         <FontAwesomeIcon icon={faArrowRight} />
                       </Table.Td>
                       <Table.Td>{eggBadges(rule.allowed_eggs, 'teal')}</Table.Td>
+                      <Table.Td>
+                        <Group gap='xs'>
+                          {OPTION_FIELDS.filter((field) => rule.options[field.key]).map((field) => (
+                            <Badge key={field.key} size='sm' variant='outline' color='gray'>
+                              {field.badge}
+                            </Badge>
+                          ))}
+                        </Group>
+                      </Table.Td>
                       {canWrite && (
                         <Table.Td>
                           <Group gap='xs' wrap='nowrap'>
@@ -274,6 +293,25 @@ export default function AdminEggChangerPage() {
 
           <Text size='xs' c='dimmed'>
             Selecting the same eggs on both sides lets servers switch freely within that group.
+          </Text>
+
+          <Divider label='Options' labelPosition='left' />
+          <SimpleGrid cols={{ base: 1, md: 2 }} spacing='md'>
+            {OPTION_FIELDS.map((field) => (
+              <Switch
+                key={field.key}
+                label={field.label}
+                description={field.description}
+                checked={ruleOptions[field.key]}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  setRuleOptions((prev) => ({ ...prev, [field.key]: checked }));
+                }}
+              />
+            ))}
+          </SimpleGrid>
+          <Text size='xs' c='dimmed'>
+            When several rules allow the same switch, every option enabled in any of them applies.
           </Text>
 
           <ModalFooter>
