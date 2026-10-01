@@ -23,14 +23,15 @@ Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.3`
   nest/egg tree. A server whose egg matches no rule can't switch. Select the same eggs on both
   sides to let servers switch freely within a group.
 - **Rule options**, applied when a server switches to one of the rule's target eggs:
-  - **Force Update Startup** - the startup command is always replaced by one of the new egg's;
-    otherwise users may keep their current one.
-  - **Force Reinstall** - the server is always reinstalled with the new egg's install script.
-  - **Force a truncate of files when reinstalling** - all files are deleted before every reinstall.
-  - **Reassign Allocations** (on for new rules) - applies the new egg's allocation deployment rules
-    from the Egg Configuration System. The server keeps its primary allocation; each additional
-    allocation rule (random, port range, or relative to the primary port) is satisfied by an
-    allocation the server already has when one fits, otherwise by a free allocation on the
+  - **Require a new startup command** - users can't hold on to their old startup command; one of
+    the target egg's commands is always applied. Without it they may keep theirs.
+  - **Always reinstall** - every switch runs the target egg's installation script.
+  - **Always wipe files on reinstall** - whenever the switch reinstalls the server, its files are
+    erased first.
+  - **Match allocations to the new egg** (on for new rules) - applies the new egg's allocation
+    deployment settings from Egg Configurations. The server keeps its primary allocation; each
+    additional allocation rule (random, port range, or relative to the primary port) is satisfied
+    by an allocation the server already has when one fits, otherwise by a free allocation on the
     server's node and IP. Ports are written to the variables the rules assign them to.
 
   When several rules allow the same switch, every option enabled in any of them applies.

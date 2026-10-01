@@ -31,29 +31,29 @@ const DEFAULT_OPTIONS: EggRuleOptions = {
 const OPTION_FIELDS: { key: keyof EggRuleOptions; label: string; badge: string; description: string }[] = [
   {
     key: 'force_startup_update',
-    label: 'Force Update Startup',
+    label: 'Require a new startup command',
     badge: 'Startup',
     description:
-      "The startup command is always replaced by one of the new egg's. Otherwise users may keep their current one.",
+      "Users can't hold on to their old startup command; one of the target egg's commands is always applied.",
   },
   {
     key: 'force_reinstall',
-    label: 'Force Reinstall',
+    label: 'Always reinstall',
     badge: 'Reinstall',
-    description: "The server is always reinstalled with the new egg's install script.",
+    description: "Every switch runs the target egg's installation script. Users can't skip it.",
   },
   {
     key: 'force_truncate',
-    label: 'Force a truncate of files when reinstalling',
+    label: 'Always wipe files on reinstall',
     badge: 'Wipe files',
-    description: 'Delete all files before reinstalling.',
+    description: "Whenever the switch reinstalls the server, its files are erased first. Users can't opt out.",
   },
   {
     key: 'reassign_allocations',
-    label: 'Reassign Allocations',
+    label: 'Match allocations to the new egg',
     badge: 'Allocations',
     description:
-      'If the new egg has different allocation requirements than the old one, automatically reassign allocations to fit the new egg (Egg Configuration System). The primary allocation is kept and allocations the server already has are reused where they fit.',
+      "Adds the ports the target egg's deployment settings (Egg Configurations) ask for. The primary port stays, and ports the server already owns are reused when they qualify.",
   },
 ];
 
