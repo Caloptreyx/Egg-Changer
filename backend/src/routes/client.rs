@@ -9,7 +9,9 @@ use shared::{
     ApiError, GetState, State,
     database::DatabaseError,
     models::{
-        BaseModel, ByUuid, UpdatableModel, invalidate_cache_keys,
+        BaseModel, ByUuid, UpdatableModel,
+        egg_configuration::{EggConfiguration, EggConfigurationTarget},
+        invalidate_cache_keys,
         nest_egg::NestEgg,
         nest_egg_variable::NestEggVariable,
         server::{
@@ -143,6 +145,9 @@ mod get_index {
 
         let config = config(&state).await?;
 
+        let node = server.node.fetch_cached(&state.database).await?;
+        let egg_configurations = EggConfiguration::all_cached(&state.database).await?;
+
         let mut eggs = Vec::new();
         for target in config.targets(server.egg.uuid) {
             // rules may still reference deleted eggs
@@ -150,7 +155,10 @@ mod get_index {
                 continue;
             };
             let nest = egg.nest.fetch_cached(&state.database).await?;
-            let configuration = egg.configuration(&state.database).await?;
+            let configuration = EggConfiguration::merge(
+                &egg_configurations,
+                &EggConfigurationTarget::new(&egg, &node),
+            );
 
             eggs.push(TargetEgg {
                 uuid: egg.uuid,
@@ -262,7 +270,12 @@ mod post_change {
                 .with_status(StatusCode::NOT_FOUND)
                 .ok();
         };
-        let egg_configuration = egg.configuration(&state.database).await?;
+        let node = server.node.fetch_cached(&state.database).await?;
+        let egg_configuration = EggConfiguration::merged_for_target(
+            &state.database,
+            &EggConfigurationTarget::new(&egg, &node),
+        )
+        .await?;
 
         let startup = match data.startup {
             _ if data.keep_startup => server.startup.clone(),
@@ -435,7 +448,7 @@ mod post_change {
         let server = Server::by_uuid(&state.database, server.uuid).await?;
 
         if reinstall {
-            if let Err(err) = server.clone().sync(&state.database).await {
+            if let Err(err) = server.clone().sync(&state).await {
                 tracing::warn!(server = %server.uuid, "failed to sync server after egg change: {err:#}");
                 return ApiResponse::error(
                     "The egg was changed, but the node could not be reached to reinstall the server.",
@@ -454,7 +467,7 @@ mod post_change {
                 )
                 .await?;
         } else {
-            server.batch_sync(&state.database).await;
+            server.batch_sync(&state).await;
         }
 
         ApiResponse::new_serialized(ChangeEggResponse {
