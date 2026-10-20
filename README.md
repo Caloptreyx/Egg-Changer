@@ -3,7 +3,7 @@
 A [Calagopus Panel](https://calagopus.com) extension that lets users switch their server to another
 egg themselves, for example from Minecraft Java to Minecraft Bedrock, within rules you set.
 
-Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.3`
+Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.6`
 
 ## What your users get
 
