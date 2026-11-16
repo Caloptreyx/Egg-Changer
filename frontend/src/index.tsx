@@ -1,6 +1,6 @@
+import type { FC, ReactNode } from 'react';
 import { faEgg } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import type { FC, ReactNode } from 'react';
 import { Extension, ExtensionContext } from 'shared';
 import EggChangerContainer from './components/EggChangerContainer.tsx';
 import AdminEggChangerPage from './pages/AdminEggChangerPage.tsx';
