@@ -1,4 +1,4 @@
-use crate::settings::{EggChangerSettingsData, EggRule, EggRuleOptions};
+use crate::settings::{EggChangerSettingsData, EggRule, EggRuleOptions, Placement};
 use axum::{extract::Path, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use shared::{
@@ -26,7 +26,14 @@ pub struct EggItem {
 #[derive(ToSchema, Serialize)]
 pub struct SettingsResponse {
     pub egg_rules: Vec<EggRule>,
+    pub placement: Placement,
     pub eggs: Vec<EggItem>,
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct SettingsPayload {
+    /// `settings`, `page` or `both`; anything else is rejected.
+    pub placement: Placement,
 }
 
 #[derive(ToSchema, Deserialize)]
@@ -103,13 +110,46 @@ mod get_settings {
         let settings = state.settings.get().await?;
         let ext_settings: &EggChangerSettingsData = settings.find_extension_settings()?;
         let egg_rules = ext_settings.egg_rules.clone();
+        let placement = ext_settings.placement;
         drop(settings);
 
         ApiResponse::new_serialized(SettingsResponse {
             egg_rules,
+            placement,
             eggs: get_all_eggs(&state).await?,
         })
         .ok()
+    }
+}
+
+mod put_settings {
+    use super::*;
+
+    #[utoipa::path(put, path = "/settings", responses(
+        (status = OK, body = inline(EmptyResponse)),
+        (status = BAD_REQUEST, body = shared::ApiError),
+    ), request_body = inline(SettingsPayload))]
+    pub async fn route(
+        state: GetState,
+        permissions: GetPermissionManager,
+        activity_logger: GetAdminActivityLogger,
+        shared::Payload(data): shared::Payload<SettingsPayload>,
+    ) -> ApiResponseResult {
+        permissions.has_admin_permission("extensions.eggchanger.write")?;
+
+        let mut settings = state.settings.get_mut().await?;
+        let ext_settings: &mut EggChangerSettingsData = settings.find_mut_extension_settings()?;
+        ext_settings.placement = data.placement;
+        settings.save().await?;
+
+        activity_logger
+            .log(
+                "settings:eggchanger:placement.update",
+                serde_json::json!({ "placement": data.placement }),
+            )
+            .await;
+
+        ApiResponse::new_serialized(EmptyResponse {}).ok()
     }
 }
 
@@ -237,7 +277,7 @@ mod delete_egg_rule {
 
 pub fn router(state: &State) -> OpenApiRouter<State> {
     OpenApiRouter::new()
-        .routes(routes!(get_settings::route))
+        .routes(routes!(get_settings::route, put_settings::route))
         .routes(routes!(post_egg_rule::route))
         .routes(routes!(put_egg_rule::route))
         .routes(routes!(delete_egg_rule::route))

@@ -1,7 +1,9 @@
 use indexmap::IndexMap;
 use shared::{
     State,
-    extensions::{Extension, ExtensionPermissionsBuilder, ExtensionRouteBuilder},
+    extensions::{
+        Extension, ExtensionPermissionsBuilder, ExtensionRouteBuilder, index_html::IndexHtmlBuilder,
+    },
     permissions::PermissionGroup,
 };
 use std::sync::Arc;
@@ -41,6 +43,23 @@ impl Extension for ExtensionStruct {
             .add_client_server_api_router(|router| {
                 router.nest("/egg-changer", routes::client::router(&state))
             })
+    }
+
+    /// The frontend needs the placement before it builds the server sidebar. Not a secret:
+    /// index.html is public.
+    async fn initialize_index_html(
+        &mut self,
+        _state: State,
+        builder: IndexHtmlBuilder,
+    ) -> IndexHtmlBuilder {
+        builder.add_variable("placement", |app| {
+            let placement = app
+                .find_extension_settings::<settings::EggChangerSettingsData>()
+                .map(|settings| settings.placement)
+                .unwrap_or_default();
+            Ok(serde_json::to_value(placement)?)
+        });
+        builder
     }
 
     async fn initialize_permissions(

@@ -7,15 +7,22 @@ Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.6`
 
 ## What your users get
 
-- A **Change Egg** card on the server's **Settings** page, shown when the user may change eggs and
-  a rule allows at least one other egg for the server.
-- Pick the new egg (grouped by nest), its startup command and docker image, or keep the current
-  startup command. Custom startup commands are only offered when the new egg's configuration
-  allows them.
-- Optionally **reinstall** the server with the new egg's install script, and optionally **wipe all
-  files** first (only together with reinstalling). Options a rule forces are shown switched on and
-  locked.
-- Startup variables are reset to the new egg's defaults.
+- **Change Egg** where the admin's *Placement* puts it: a section at the bottom of the server's
+  **Settings** page (the default, as in 1.0), a **Change Egg** page in the server sidebar, or both.
+  The Settings section only appears when the user may change eggs and a rule allows at least one
+  other egg for the server; the page says so when no egg is available.
+- The current egg, and the eggs the server may switch to as cards with their nest, description and
+  what the switch forces (reinstall, file wipe, new startup command, extra ports). Search and a
+  nest filter appear once there are more than six eggs or more than one nest.
+- Pick a card, then its startup command and docker image, or keep the current startup command.
+  Custom startup commands are only offered when the new egg's configuration allows them.
+- Optionally **reinstall** the server with the new egg's install script, and optionally **delete
+  all files** first (only together with reinstalling, and only after ticking a confirmation).
+  Options a rule forces are shown switched on and locked.
+- Before switching, a **What happens** list spells out the switch: the startup command and docker
+  image it applies, that startup variables are reset to the new egg's defaults, how many ports may
+  be added, and whether files stay, the install script runs or every file is deleted.
+- Works on phones (the dialog goes full-screen) and follows the panel theme (Mint, Zoron, ...).
 
 ## What you get
 
@@ -51,7 +58,10 @@ Extensions require the `:heavy` panel image - see the
 
 1. **Egg Rules** - add at least one rule. *Servers on* are the eggs the rule applies to, *Can switch
    to* are the eggs those servers may switch to, *Options* control what a switch does.
-2. Give subusers the `eggchanger.change` permission where wanted. Owners and admins always have it.
+2. **Placement** - *Settings page* (default), *Own page* or *Both*. Users see a change after
+   reloading the panel. Egg Configurations can hide or reorder the page per egg like any sidebar
+   page.
+3. Give subusers the `eggchanger.change` permission where wanted. Owners and admins always have it.
 
 Permissions: server `eggchanger.change`, which covers reinstalls and wipes a rule forces; choosing
 to reinstall also needs `settings.install`. Admin `extensions.eggchanger.read|write`.
@@ -63,7 +73,8 @@ to reinstall also needs `settings.install`. Admin `extensions.eggchanger.read|wr
 - `POST /api/client/servers/{server}/egg-changer` -
   `{ egg_uuid, startup?, image?, keep_startup?, reinstall?, truncate_directory? }`; `startup` and
   `image` default to the egg's default startup command and first docker image.
-- `GET /api/admin/extensions/dev.caloptreyx.eggchanger/settings`,
+- `GET|PUT /api/admin/extensions/dev.caloptreyx.eggchanger/settings` - `PUT` takes
+  `{ placement: "settings" | "page" | "both" }`,
   `POST /api/admin/extensions/dev.caloptreyx.eggchanger/egg-rules`,
   `PUT|DELETE /api/admin/extensions/dev.caloptreyx.eggchanger/egg-rules/{id}` - rules are
   `{ eggs, allowed_eggs, options: { force_startup_update, force_reinstall, force_truncate,

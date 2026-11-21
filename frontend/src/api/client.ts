@@ -1,4 +1,5 @@
 import { axiosInstance } from '@/api/axios.ts';
+import type { Placement } from '../lib/placement.ts';
 
 const ADMIN_BASE = '/api/admin/extensions/dev.caloptreyx.eggchanger';
 
@@ -25,6 +26,7 @@ export interface EggRule {
 
 export interface AdminSettingsResponse {
   egg_rules: EggRule[];
+  placement: Placement;
   eggs: EggItem[];
 }
 
@@ -48,8 +50,15 @@ export interface TargetEgg {
   options: EggRuleOptions;
 }
 
+export interface CurrentEgg {
+  uuid: string;
+  name: string;
+  description: string | null;
+  nest_name: string;
+}
+
 export interface EggChangerIndex {
-  current_egg: { uuid: string; name: string };
+  current_egg: CurrentEgg;
   eggs: TargetEgg[];
 }
 
@@ -71,6 +80,10 @@ export interface ChangeEggResponse {
 export async function getAdminSettings(): Promise<AdminSettingsResponse> {
   const { data } = await axiosInstance.get(`${ADMIN_BASE}/settings`);
   return data;
+}
+
+export async function updatePlacement(placement: Placement): Promise<void> {
+  await axiosInstance.put(`${ADMIN_BASE}/settings`, { placement });
 }
 
 export async function createEggRule(payload: EggRulePayload): Promise<EggRule> {

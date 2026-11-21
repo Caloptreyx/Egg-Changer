@@ -1,84 +1,105 @@
-import { faTriangleExclamation } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowRight,
+  faCircleExclamation,
+  faCircleInfo,
+  faTriangleExclamation,
+} from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Alert, List, Stack, Text } from '@mantine/core';
-import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Alert, List } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
+import { useEffect, useState } from 'react';
 import { httpErrorToHuman } from '@/api/axios.ts';
 import getServer from '@/api/server/getServer.ts';
 import Button from '@/elements/buttons/Button.tsx';
+import Avatar from '@/elements/data-display/Avatar.tsx';
+import Badge from '@/elements/data-display/Badge.tsx';
+import ThemeIcon from '@/elements/data-display/ThemeIcon.tsx';
+import Checkbox from '@/elements/input/Checkbox.tsx';
 import Select from '@/elements/input/Select.tsx';
 import Switch from '@/elements/input/Switch.tsx';
 import TextArea from '@/elements/input/TextArea.tsx';
+import Group from '@/elements/layout/Group.tsx';
+import Paper from '@/elements/layout/Paper.tsx';
+import Stack from '@/elements/layout/Stack.tsx';
 import { Modal, ModalFooter } from '@/elements/modals/Modal.tsx';
+import Text from '@/elements/typography/Text.tsx';
 import { useServerCan } from '@/plugins/usePermissions.ts';
 import { useToast } from '@/providers/ToastProvider.tsx';
 import { useServerStore } from '@/stores/server.ts';
-import { changeEgg, type EggChangerIndex } from '../api/client.ts';
+import { type ChangeEggResponse, type CurrentEgg, changeEgg, type TargetEgg } from '../api/client.ts';
+import { changeEffects, defaultStartup, type EffectTone, effectiveChoices } from '../lib/eggs.ts';
+
+const TONES: Record<EffectTone, { color: string | undefined; icon: typeof faCircleInfo }> = {
+  info: { color: undefined, icon: faCircleInfo },
+  warning: { color: 'yellow', icon: faTriangleExclamation },
+  danger: { color: 'red', icon: faCircleExclamation },
+};
+
+const BUSY_STATUS: Record<string, string> = {
+  installing: 'is installing',
+  install_failed: 'has a failed installation',
+  restoring_backup: 'is restoring a backup',
+  backup_restore_failed: 'has a failed backup restore',
+};
 
 interface ChangeEggModalProps {
   opened: boolean;
+  egg: TargetEgg;
+  current: CurrentEgg;
   onClose: () => void;
-  index: EggChangerIndex;
+  onBusyChange: (busy: boolean) => void;
+  onChanged: (result: ChangeEggResponse) => void;
 }
 
-export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModalProps) {
+/** Options for the switch and a plain summary of what it does, confirmed in one step. */
+export default function ChangeEggModal({
+  opened,
+  egg,
+  current,
+  onClose,
+  onBusyChange,
+  onChanged,
+}: ChangeEggModalProps) {
   const { addToast } = useToast();
-  const navigate = useNavigate();
   const server = useServerStore((state) => state.server);
   const setServer = useServerStore((state) => state.setServer);
   const canReinstall = useServerCan('settings.install');
+  const fullScreen = useMediaQuery('(max-width: 36em)');
 
-  const [eggUuid, setEggUuid] = useState<string | null>(null);
+  const [updateStartup, setUpdateStartup] = useState(true);
   const [startup, setStartup] = useState('');
   const [image, setImage] = useState('');
-  const [updateStartup, setUpdateStartup] = useState(true);
   const [reinstall, setReinstall] = useState(false);
-  const [truncateDirectory, setTruncateDirectory] = useState(false);
+  const [wipe, setWipe] = useState(false);
+  const [understood, setUnderstood] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const egg = index.eggs.find((e) => e.uuid === eggUuid) ?? null;
-  // options the egg's rules force override the user's choices
-  const updatingStartup = updateStartup || !!egg?.options.force_startup_update;
-  const reinstalling = reinstall || !!egg?.options.force_reinstall;
-  const wiping = reinstalling && (truncateDirectory || !!egg?.options.force_truncate);
-
-  const eggOptions = useMemo(() => {
-    const groups = new Map<string, { value: string; label: string }[]>();
-    for (const target of index.eggs) {
-      const items = groups.get(target.nest_name) ?? [];
-      items.push({ value: target.uuid, label: target.name });
-      groups.set(target.nest_name, items);
-    }
-    return [...groups].map(([group, items]) => ({ group, items }));
-  }, [index.eggs]);
-
-  const selectEgg = (uuid: string | null) => {
-    const target = index.eggs.find((e) => e.uuid === uuid);
-    setEggUuid(uuid);
-    // same default as the backend: the command named "Default", else the first one
-    const command = target?.startup_commands.find((c) => c.name === 'Default') ?? target?.startup_commands[0];
-    setStartup(command?.value ?? '');
-    setImage(target?.docker_images[0]?.value ?? '');
-  };
-
-  const reset = () => {
-    selectEgg(null);
+  // every newly picked egg starts from its defaults
+  useEffect(() => {
     setUpdateStartup(true);
+    setStartup(defaultStartup(egg));
+    setImage(egg.docker_images[0]?.value ?? '');
     setReinstall(false);
-    setTruncateDirectory(false);
-  };
+    setWipe(false);
+    setUnderstood(false);
+  }, [egg]);
+
+  const choices = { updateStartup, startup, image, reinstall, wipe };
+  const { updatingStartup, reinstalling, wiping } = effectiveChoices(egg, choices);
+  const effects = changeEffects({ eggName: current.name, image: server.image }, egg, choices);
+  const busyStatus = reinstalling && server.status ? (BUSY_STATUS[server.status] ?? 'is busy') : null;
+
+  const showStartupPicker = updatingStartup && (egg.startup_commands.length > 1 || egg.allow_custom_startup_command);
+  const presetValue = egg.startup_commands.some((c) => c.value === startup) ? startup : null;
 
   const close = () => {
-    if (submitting) return;
-    reset();
-    onClose();
+    if (!submitting) onClose();
   };
 
   const submit = async () => {
-    if (!egg) return;
-
+    setSubmitting(true);
+    onBusyChange(true);
     try {
-      setSubmitting(true);
       const result = await changeEgg(server.uuid, {
         egg_uuid: egg.uuid,
         startup: updatingStartup ? startup : null,
@@ -94,133 +115,178 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
           : `Switched to ${result.egg.name}. Restart the server to apply the change.`,
         'success',
       );
-      if (result.allocations.length > 0) {
-        addToast(`Assigned allocations: ${result.allocations.map((a) => `${a.ip}:${a.port}`).join(', ')}`, 'success');
-      }
-
+      onChanged(result);
       setServer(await getServer(server.uuid));
-      setSubmitting(false);
-      reset();
-      onClose();
-      if (result.reinstalling) {
-        navigate(`/server/${server.uuidShort}`);
-      }
     } catch (err) {
       addToast(httpErrorToHuman(err), 'error');
+    } finally {
       setSubmitting(false);
+      onBusyChange(false);
     }
   };
 
-  const presetValue = egg?.startup_commands.some((c) => c.value === startup) ? startup : null;
-
   return (
-    <Modal opened={opened} onClose={close} title='Change Egg' size='lg'>
-      <Stack gap='md'>
-        <Text size='sm'>
-          Currently running <b>{index.current_egg.name}</b>.
-        </Text>
-
-        <Select
-          label='New egg'
-          placeholder='Select an egg'
-          data={eggOptions}
-          value={eggUuid}
-          onChange={selectEgg}
-          searchable
-        />
-
-        {egg?.description && (
-          <Text size='xs' c='dimmed'>
-            {egg.description}
-          </Text>
-        )}
-
-        {egg && !egg.options.force_startup_update && (
-          <Switch
-            label='Update the startup command'
-            description='Turn off to keep the current startup command.'
-            checked={updateStartup}
-            onChange={(e) => setUpdateStartup(e.currentTarget.checked)}
-          />
-        )}
-
-        {egg && updatingStartup && (egg.startup_commands.length > 1 || egg.allow_custom_startup_command) && (
-          <Select
-            label={egg.allow_custom_startup_command ? 'Startup preset' : 'Startup command'}
-            data={egg.startup_commands.map((c) => ({ value: c.value, label: c.name }))}
-            value={presetValue}
-            placeholder={egg.allow_custom_startup_command ? 'Custom' : undefined}
-            onChange={(value) => value && setStartup(value)}
-          />
-        )}
-
-        {egg?.allow_custom_startup_command && updatingStartup && (
-          <TextArea
-            label='Startup command'
-            autosize
-            minRows={2}
-            value={startup}
-            onChange={(e) => setStartup(e.currentTarget.value)}
-          />
-        )}
-
-        {egg && egg.docker_images.length > 1 && (
-          <Select
-            label='Docker image'
-            data={egg.docker_images.map((i) => ({ value: i.value, label: i.name }))}
-            value={image}
-            onChange={(value) => value && setImage(value)}
-          />
-        )}
-
-        {egg && (canReinstall || egg.options.force_reinstall) && (
-          <Switch
-            label='Reinstall the server'
-            description={
-              egg.options.force_reinstall
-                ? `Always done when switching to ${egg.name}.`
-                : "Runs the new egg's install script after switching."
-            }
-            checked={reinstalling}
-            disabled={egg.options.force_reinstall}
-            onChange={(e) => {
-              setReinstall(e.currentTarget.checked);
-              if (!e.currentTarget.checked) setTruncateDirectory(false);
-            }}
-          />
-        )}
-
-        {egg && reinstalling && (
-          <Switch
-            color='red'
-            label='Wipe all files before reinstalling'
-            description={
-              egg.options.force_truncate
-                ? `Always done when reinstalling into ${egg.name}. This cannot be undone.`
-                : 'Deletes every file of this server. This cannot be undone.'
-            }
-            checked={wiping}
-            disabled={egg.options.force_truncate}
-            onChange={(e) => setTruncateDirectory(e.currentTarget.checked)}
-          />
-        )}
-
-        {egg && (
-          <Alert color='yellow' icon={<FontAwesomeIcon icon={faTriangleExclamation} />}>
-            <List size='sm' spacing={4}>
-              <List.Item>All startup variables are reset to the defaults of {egg.name}.</List.Item>
-              {egg.deployment_allocations > 0 && (
-                <List.Item>
-                  This egg needs up to {egg.deployment_allocations} additional allocation
-                  {egg.deployment_allocations === 1 ? '' : 's'}. Allocations the server already has are reused where
-                  they fit.
-                </List.Item>
+    <Modal
+      opened={opened}
+      onClose={close}
+      title={`Switch to ${egg.name}`}
+      size='lg'
+      fullScreen={fullScreen}
+      closeOnClickOutside={!submitting}
+      closeOnEscape={!submitting}
+      withCloseButton={!submitting}
+    >
+      <Stack gap='lg'>
+        <Group wrap='nowrap' gap='sm' align='stretch'>
+          {[
+            { label: 'From', name: current.name, nest: current.nest_name },
+            { label: 'To', name: egg.name, nest: egg.nest_name },
+          ].map((side, i) => (
+            <Group key={side.label} wrap='nowrap' gap='sm' style={{ flex: 1, minWidth: 0 }}>
+              {i === 1 && (
+                <Text c='dimmed' aria-hidden>
+                  <FontAwesomeIcon icon={faArrowRight} />
+                </Text>
               )}
-              {!updatingStartup && <List.Item>The current startup command is kept.</List.Item>}
-              {!reinstalling && <List.Item>Files are kept, the new egg's install script is not run.</List.Item>}
-              {wiping && <List.Item>All files of this server are deleted before reinstalling.</List.Item>}
-            </List>
+              <Paper withBorder radius='md' p='sm' style={{ flex: 1, minWidth: 0 }}>
+                <Group wrap='nowrap' gap='sm'>
+                  <Avatar name={side.name} size='md' radius='md' />
+                  <Stack gap={0} style={{ minWidth: 0 }}>
+                    <Text size='xs' c='dimmed'>
+                      {side.label}
+                    </Text>
+                    <Text fw={600} size='sm' truncate='end'>
+                      {side.name}
+                    </Text>
+                    <Text size='xs' c='dimmed' truncate='end'>
+                      {side.nest}
+                    </Text>
+                  </Stack>
+                </Group>
+              </Paper>
+            </Group>
+          ))}
+        </Group>
+
+        <Stack gap='sm'>
+          {!egg.options.force_startup_update && (
+            <Switch
+              label={`Use ${egg.name}'s startup command`}
+              description='Turn off to keep the current startup command.'
+              checked={updateStartup}
+              disabled={submitting}
+              onChange={(e) => setUpdateStartup(e.currentTarget.checked)}
+            />
+          )}
+
+          {showStartupPicker && (
+            <Select
+              label={egg.allow_custom_startup_command ? 'Startup preset' : 'Startup command'}
+              data={egg.startup_commands.map((c) => ({ value: c.value, label: c.name }))}
+              value={presetValue}
+              placeholder={egg.allow_custom_startup_command ? 'Custom' : undefined}
+              disabled={submitting}
+              onChange={(value) => value && setStartup(value)}
+            />
+          )}
+
+          {egg.allow_custom_startup_command && updatingStartup && (
+            <TextArea
+              label='Startup command'
+              autosize
+              minRows={2}
+              maxRows={6}
+              value={startup}
+              disabled={submitting}
+              onChange={(e) => setStartup(e.currentTarget.value)}
+            />
+          )}
+
+          {egg.docker_images.length > 1 && (
+            <Select
+              label='Docker image'
+              data={egg.docker_images.map((i) => ({ value: i.value, label: i.name }))}
+              value={image}
+              disabled={submitting}
+              onChange={(value) => value && setImage(value)}
+            />
+          )}
+
+          {(canReinstall || egg.options.force_reinstall) && (
+            <Switch
+              label='Reinstall the server'
+              description={
+                egg.options.force_reinstall
+                  ? `Your host always reinstalls when switching to ${egg.name}.`
+                  : `Runs ${egg.name}'s install script after switching.`
+              }
+              checked={reinstalling}
+              disabled={submitting || egg.options.force_reinstall}
+              onChange={(e) => {
+                setReinstall(e.currentTarget.checked);
+                if (!e.currentTarget.checked) setWipe(false);
+              }}
+            />
+          )}
+
+          {reinstalling && (
+            <Switch
+              color='red'
+              label='Delete all files before reinstalling'
+              description={
+                egg.options.force_truncate
+                  ? `Your host always deletes the files when reinstalling into ${egg.name}.`
+                  : 'Starts from an empty server. This cannot be undone.'
+              }
+              checked={wiping}
+              disabled={submitting || egg.options.force_truncate}
+              onChange={(e) => {
+                setWipe(e.currentTarget.checked);
+                setUnderstood(false);
+              }}
+            />
+          )}
+        </Stack>
+
+        <Paper withBorder radius='md' p='md'>
+          <Text fw={600} size='sm' mb='sm'>
+            What happens
+          </Text>
+          <List spacing='sm' size='sm'>
+            {effects.map((effect) => (
+              <List.Item
+                key={effect.key}
+                icon={
+                  <ThemeIcon size={22} radius='xl' variant='light' color={TONES[effect.tone].color}>
+                    <FontAwesomeIcon icon={TONES[effect.tone].icon} size='xs' />
+                  </ThemeIcon>
+                }
+              >
+                {effect.text}
+                {effect.forced && (
+                  <Badge size='xs' variant='outline' color='gray' ml={6}>
+                    Set by your host
+                  </Badge>
+                )}
+              </List.Item>
+            ))}
+          </List>
+        </Paper>
+
+        {busyStatus && (
+          <Alert color='red' variant='light' icon={<FontAwesomeIcon icon={faCircleExclamation} />}>
+            The server {busyStatus}, so it can't be reinstalled right now.
           </Alert>
+        )}
+
+        {wiping && (
+          <Checkbox
+            color='red'
+            label='I understand that every file of this server is deleted.'
+            checked={understood}
+            disabled={submitting}
+            onChange={(e) => setUnderstood(e.currentTarget.checked)}
+          />
         )}
 
         <ModalFooter>
@@ -228,12 +294,14 @@ export default function ChangeEggModal({ opened, onClose, index }: ChangeEggModa
             Cancel
           </Button>
           <Button
-            color='red'
+            color={wiping ? 'red' : undefined}
             loading={submitting}
-            disabled={!egg || (updatingStartup && startup.trim() === '') || image === ''}
+            disabled={
+              (updatingStartup && startup.trim() === '') || image === '' || (wiping && !understood) || !!busyStatus
+            }
             onClick={submit}
           >
-            Change Egg
+            {wiping ? 'Delete files and switch' : reinstalling ? 'Switch and reinstall' : 'Switch egg'}
           </Button>
         </ModalFooter>
       </Stack>

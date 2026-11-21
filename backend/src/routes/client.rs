@@ -56,9 +56,18 @@ pub struct TargetEgg {
     pub options: EggRuleOptions,
 }
 
+/// The server's egg before switching.
+#[derive(ToSchema, Serialize)]
+pub struct CurrentEgg {
+    pub uuid: uuid::Uuid,
+    pub name: compact_str::CompactString,
+    pub description: Option<compact_str::CompactString>,
+    pub nest_name: compact_str::CompactString,
+}
+
 #[derive(ToSchema, Serialize)]
 pub struct IndexResponse {
-    pub current_egg: EggSummary,
+    pub current_egg: CurrentEgg,
     pub eggs: Vec<TargetEgg>,
 }
 
@@ -185,9 +194,11 @@ mod get_index {
         }
 
         ApiResponse::new_serialized(IndexResponse {
-            current_egg: EggSummary {
+            current_egg: CurrentEgg {
                 uuid: server.egg.uuid,
                 name: server.egg.name.clone(),
+                description: server.egg.description.clone(),
+                nest_name: server.nest.name.clone(),
             },
             eggs,
         })

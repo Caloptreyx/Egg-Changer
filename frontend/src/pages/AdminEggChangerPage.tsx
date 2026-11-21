@@ -1,6 +1,18 @@
 import { faArrowRight, faEdit, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Badge, Card, Divider, Group, SimpleGrid, Stack, Switch, Table, Text, Title } from '@mantine/core';
+import {
+  Badge,
+  Card,
+  Divider,
+  Group,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Switch,
+  Table,
+  Text,
+  Title,
+} from '@mantine/core';
 import { useEffect, useMemo, useState } from 'react';
 import { httpErrorToHuman } from '@/api/axios.ts';
 import AlertError from '@/elements/alerts/AlertError.tsx';
@@ -18,8 +30,25 @@ import {
   type EggRuleOptions,
   getAdminSettings,
   updateEggRule,
+  updatePlacement,
 } from '../api/client.ts';
 import EggTreePicker from '../components/EggTreePicker.tsx';
+import { PLACEMENTS, type Placement, placementOf } from '../lib/placement.ts';
+
+const PLACEMENT_FIELDS: Record<Placement, { label: string; description: string }> = {
+  settings: {
+    label: 'Settings page',
+    description: "A Change Egg section at the bottom of each server's Settings page.",
+  },
+  page: {
+    label: 'Own page',
+    description: 'A Change Egg page in the server sidebar.',
+  },
+  both: {
+    label: 'Both',
+    description: 'The Settings section and the sidebar page.',
+  },
+};
 
 const DEFAULT_OPTIONS: EggRuleOptions = {
   force_startup_update: false,
@@ -72,6 +101,7 @@ export default function AdminEggChangerPage() {
   const [sourceEggs, setSourceEggs] = useState<string[]>([]);
   const [targetEggs, setTargetEggs] = useState<string[]>([]);
   const [ruleOptions, setRuleOptions] = useState<EggRuleOptions>(DEFAULT_OPTIONS);
+  const [savingPlacement, setSavingPlacement] = useState(false);
 
   const load = async () => {
     try {
@@ -137,6 +167,20 @@ export default function AdminEggChangerPage() {
     }
   };
 
+  const savePlacement = async (value: string) => {
+    const placement = placementOf(value);
+    try {
+      setSavingPlacement(true);
+      await updatePlacement(placement);
+      setSettings((prev) => prev && { ...prev, placement });
+      addToast('Placement saved. Users see it after reloading the panel.', 'success');
+    } catch (err) {
+      addToast(httpErrorToHuman(err), 'error');
+    } finally {
+      setSavingPlacement(false);
+    }
+  };
+
   const eggBadges = (uuids: string[], color: string) => (
     <Group gap='xs'>
       {uuids.map((uuid) => (
@@ -153,8 +197,8 @@ export default function AdminEggChangerPage() {
         Egg Changer
       </Title>
       <Text size='sm' c='dimmed'>
-        Decide which eggs servers may switch between. Server owners and subusers with the eggchanger.change permission
-        switch from the server settings page.
+        Decide which eggs servers may switch between, and where users find the switch. Server owners and subusers with
+        the eggchanger.change permission can switch.
       </Text>
     </div>
   );
@@ -254,6 +298,29 @@ export default function AdminEggChangerPage() {
               </Table>
             </Table.ScrollContainer>
           )}
+        </Stack>
+      </Card>
+
+      <Card padding='lg' radius='md' withBorder>
+        <Stack gap='sm'>
+          <div>
+            <Title order={4} fw={600}>
+              Placement
+            </Title>
+            <Text size='xs' c='dimmed'>
+              Where users find Change Egg on their servers. Users see a change after reloading the panel.
+            </Text>
+          </div>
+          <SegmentedControl
+            data={PLACEMENTS.map((value) => ({ value, label: PLACEMENT_FIELDS[value].label }))}
+            value={placementOf(settings.placement)}
+            disabled={!canWrite || savingPlacement}
+            onChange={savePlacement}
+            style={{ alignSelf: 'flex-start', maxWidth: '100%' }}
+          />
+          <Text size='sm' c='dimmed'>
+            {PLACEMENT_FIELDS[placementOf(settings.placement)].description}
+          </Text>
         </Stack>
       </Card>
 

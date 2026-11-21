@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use shared::extensions::settings::{
     ExtensionSettings, SettingsDeserializeExt, SettingsDeserializer, SettingsSerializeExt,
     SettingsSerializer,
@@ -67,10 +67,33 @@ pub struct Target {
     pub options: EggRuleOptions,
 }
 
+/// Where users find the egg changer on a server.
+#[derive(ToSchema, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    /// A section on the server's Settings page, as before 1.1.0.
+    #[default]
+    Settings,
+    /// Its own page in the server sidebar.
+    Page,
+    /// The Settings section and the sidebar page.
+    Both,
+}
+
+/// Reads a stored placement, falling back to the default for a value this version doesn't know
+/// (written by a newer version before a downgrade). Failing instead would fail the whole stored
+/// config and with it the egg rules.
+fn lenient_placement<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Placement, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 #[derive(ToSchema, Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EggChangerSettingsData {
     #[serde(default)]
     pub egg_rules: Vec<EggRule>,
+    #[serde(default, deserialize_with = "lenient_placement")]
+    pub placement: Placement,
 }
 
 impl EggChangerSettingsData {
@@ -157,6 +180,7 @@ mod tests {
                 rule(&[5], &[6], PLAIN),
                 rule(&[1], &[3, 4], PLAIN),
             ],
+            ..Default::default()
         };
 
         let eggs = |current| {
@@ -196,6 +220,7 @@ mod tests {
                     },
                 ),
             ],
+            ..Default::default()
         };
 
         assert_eq!(
@@ -226,5 +251,52 @@ mod tests {
         assert_eq!(config.egg_rules.len(), 1);
         assert_eq!(config.egg_rules[0].options, EggRuleOptions::default());
         assert!(config.egg_rules[0].options.reassign_allocations);
+    }
+
+    #[test]
+    fn configs_saved_before_placement_existed_keep_the_settings_section() {
+        let stored = r#"{"egg_rules":[{"id":"18a6ac64-df1b-4b2c-a327-8dd4e79a3ffb","eggs":["00000000-0000-0000-0000-000000000001"],"allowed_eggs":["00000000-0000-0000-0000-000000000002"]}]}"#;
+
+        let config: EggChangerSettingsData = serde_json::from_str(stored).unwrap();
+        assert_eq!(config.placement, Placement::Settings);
+        assert_eq!(
+            EggChangerSettingsData::default().placement,
+            Placement::Settings
+        );
+    }
+
+    #[test]
+    fn placement_only_accepts_known_values() {
+        for (value, expected) in [
+            ("settings", Placement::Settings),
+            ("page", Placement::Page),
+            ("both", Placement::Both),
+        ] {
+            let json = serde_json::json!(value);
+            assert_eq!(
+                serde_json::from_value::<Placement>(json.clone()).unwrap(),
+                expected
+            );
+            assert_eq!(serde_json::to_value(expected).unwrap(), json);
+        }
+
+        for invalid in [
+            serde_json::json!("sidebar"),
+            serde_json::json!("Page"),
+            serde_json::json!(""),
+            serde_json::json!(null),
+            serde_json::json!(1),
+        ] {
+            assert!(serde_json::from_value::<Placement>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn an_unknown_stored_placement_keeps_the_rules() {
+        let stored = r#"{"egg_rules":[{"id":"18a6ac64-df1b-4b2c-a327-8dd4e79a3ffb","eggs":["00000000-0000-0000-0000-000000000001"],"allowed_eggs":["00000000-0000-0000-0000-000000000002"]}],"placement":"floating"}"#;
+
+        let config: EggChangerSettingsData = serde_json::from_str(stored).unwrap();
+        assert_eq!(config.egg_rules.len(), 1);
+        assert_eq!(config.placement, Placement::Settings);
     }
 }
