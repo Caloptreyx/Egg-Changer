@@ -47,6 +47,8 @@ export interface ChangeChoices {
   image: string;
   reinstall: boolean;
   wipe: boolean;
+  /** Create a backup first; only honoured when the backup is available. */
+  backup: boolean;
 }
 
 /** The choices after the options of the egg's rules are applied, as the backend applies them. */
@@ -54,24 +56,42 @@ export function effectiveChoices(egg: Pick<TargetEgg, 'options'>, choices: Chang
   const updatingStartup = choices.updateStartup || egg.options.force_startup_update;
   const reinstalling = choices.reinstall || egg.options.force_reinstall;
   const wiping = reinstalling && (choices.wipe || egg.options.force_truncate);
-  return { updatingStartup, reinstalling, wiping };
+  const backingUp = choices.backup || egg.options.force_backup;
+  return { updatingStartup, reinstalling, wiping, backingUp };
 }
 
 /**
  * Why the user can't switch to `egg` at all, or null when they can. Like the backend, a reinstall
- * the rule forces still needs the core `settings.install` permission.
+ * the rule forces still needs the core `settings.install` permission, and a forced backup needs a
+ * backup the user can create (`backupUnavailable` says why not).
  */
-export function switchBlocker(egg: Pick<TargetEgg, 'options'>, canReinstall: boolean): string | null {
+export function switchBlocker(
+  egg: Pick<TargetEgg, 'options'>,
+  canReinstall: boolean,
+  backupUnavailable: string | null,
+): string | null {
   if (egg.options.force_reinstall && !canReinstall) {
     return 'This switch always reinstalls the server, which needs the reinstall permission.';
   }
+  if (egg.options.force_backup && backupUnavailable) {
+    return `This switch always creates a backup first. ${backupUnavailable}`;
+  }
   return null;
+}
+
+/** Name of the backup made before switching to `eggName`, e.g. "Before egg change to Paper (2026-11-22 14:05)". */
+export function backupName(eggName: string, date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const suffix = ` (${stamp})`;
+  // core allows 255 characters
+  return `Before egg change to ${eggName}`.slice(0, 255 - suffix.length) + suffix;
 }
 
 export type EffectTone = 'info' | 'warning' | 'danger';
 
 export interface Effect {
-  key: 'egg' | 'startup' | 'image' | 'variables' | 'allocations' | 'install';
+  key: 'egg' | 'backup' | 'startup' | 'image' | 'variables' | 'allocations' | 'install';
   tone: EffectTone;
   text: string;
   /** Set by the host's rule, the user can't change it. */
@@ -84,7 +104,7 @@ export function changeEffects(
   egg: TargetEgg,
   choices: ChangeChoices,
 ): Effect[] {
-  const { updatingStartup, reinstalling, wiping } = effectiveChoices(egg, choices);
+  const { updatingStartup, reinstalling, wiping, backingUp } = effectiveChoices(egg, choices);
   const effects: Effect[] = [
     {
       key: 'egg',
@@ -93,6 +113,15 @@ export function changeEffects(
       forced: false,
     },
   ];
+
+  if (backingUp) {
+    effects.push({
+      key: 'backup',
+      tone: 'info',
+      text: 'A backup of the server is created first. Nothing changes until it has finished successfully; if it fails, the egg stays as it is.',
+      forced: egg.options.force_backup,
+    });
+  }
 
   if (updatingStartup) {
     const preset = egg.startup_commands.find((c) => c.value === choices.startup);

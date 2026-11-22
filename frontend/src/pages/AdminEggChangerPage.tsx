@@ -1,10 +1,21 @@
-import { faArrowRight, faEdit, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowRight,
+  faEdit,
+  faImage,
+  faPlus,
+  faTrash,
+  faTriangleExclamation,
+} from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
+  Alert,
   Badge,
+  Box,
   Card,
   Divider,
   Group,
+  List,
+  Paper,
   SegmentedControl,
   SimpleGrid,
   Stack,
@@ -17,6 +28,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { httpErrorToHuman } from '@/api/axios.ts';
 import AlertError from '@/elements/alerts/AlertError.tsx';
 import Button from '@/elements/buttons/Button.tsx';
+import Avatar from '@/elements/data-display/Avatar.tsx';
 import Spinner from '@/elements/feedback/Spinner.tsx';
 import ConfirmationModal from '@/elements/modals/ConfirmationModal.tsx';
 import { Modal, ModalFooter } from '@/elements/modals/Modal.tsx';
@@ -26,27 +38,37 @@ import {
   type AdminSettingsResponse,
   createEggRule,
   deleteEggRule,
+  type EggAppearance,
+  type EggItem,
   type EggRule,
   type EggRuleOptions,
   getAdminSettings,
+  updateEggAppearance,
   updateEggRule,
   updatePlacement,
 } from '../api/client.ts';
+import EggAppearanceModal from '../components/EggAppearanceModal.tsx';
+import EggImage from '../components/EggImage.tsx';
 import EggTreePicker from '../components/EggTreePicker.tsx';
+import { appearanceEggs, BANNER_RATIO } from '../lib/images.ts';
 import { PLACEMENTS, type Placement, placementOf } from '../lib/placement.ts';
+import { ruleOverlaps } from '../lib/rules.ts';
 
 const PLACEMENT_FIELDS: Record<Placement, { label: string; description: string }> = {
   settings: {
     label: 'Settings page',
-    description: "A Change Egg section at the bottom of each server's Settings page.",
+    description:
+      "After a reload, users find Change Egg as a section at the bottom of each server's Settings page. There is no sidebar entry.",
   },
   page: {
     label: 'Own page',
-    description: 'A Change Egg page in the server sidebar.',
+    description:
+      'After a reload, users find "Change Egg" as its own entry in the server sidebar. The section on the Settings page is gone.',
   },
   both: {
     label: 'Both',
-    description: 'The Settings section and the sidebar page.',
+    description:
+      'After a reload, users find "Change Egg" in the server sidebar and as a section at the bottom of each server\'s Settings page.',
   },
 };
 
@@ -55,6 +77,7 @@ const DEFAULT_OPTIONS: EggRuleOptions = {
   force_reinstall: false,
   force_truncate: false,
   reassign_allocations: true,
+  force_backup: false,
 };
 
 const OPTION_FIELDS: { key: keyof EggRuleOptions; label: string; badge: string; description: string }[] = [
@@ -84,6 +107,13 @@ const OPTION_FIELDS: { key: keyof EggRuleOptions; label: string; badge: string; 
     description:
       "Adds the ports the target egg's deployment settings (Egg Configurations) ask for. The primary port stays, and ports the server already owns are reused when they qualify.",
   },
+  {
+    key: 'force_backup',
+    label: 'Always back up first',
+    badge: 'Backup',
+    description:
+      "Every switch first creates a backup through the panel's backup system and only goes ahead once it finished successfully. Users need the backup create permission and a free backup slot.",
+  },
 ];
 
 export default function AdminEggChangerPage() {
@@ -102,6 +132,8 @@ export default function AdminEggChangerPage() {
   const [targetEggs, setTargetEggs] = useState<string[]>([]);
   const [ruleOptions, setRuleOptions] = useState<EggRuleOptions>(DEFAULT_OPTIONS);
   const [savingPlacement, setSavingPlacement] = useState(false);
+  const [appearanceEgg, setAppearanceEgg] = useState<EggItem | null>(null);
+  const [clearingEgg, setClearingEgg] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -181,6 +213,31 @@ export default function AdminEggChangerPage() {
     }
   };
 
+  const appearanceSaved = (eggUuid: string, appearance: EggAppearance) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const egg_appearance = { ...prev.egg_appearance };
+      if (appearance.icon || appearance.banner) {
+        egg_appearance[eggUuid] = appearance;
+      } else {
+        delete egg_appearance[eggUuid];
+      }
+      return { ...prev, egg_appearance };
+    });
+  };
+
+  const clearAppearance = async (eggUuid: string) => {
+    try {
+      setClearingEgg(eggUuid);
+      appearanceSaved(eggUuid, await updateEggAppearance(eggUuid, { icon: null, banner: null }));
+      addToast('Icon and banner removed.', 'success');
+    } catch (err) {
+      addToast(httpErrorToHuman(err), 'error');
+    } finally {
+      setClearingEgg(null);
+    }
+  };
+
   const eggBadges = (uuids: string[], color: string) => (
     <Group gap='xs'>
       {uuids.map((uuid) => (
@@ -223,6 +280,15 @@ export default function AdminEggChangerPage() {
       </Stack>
     );
   }
+
+  const eggItems = new Map(settings.eggs.map((egg) => [egg.uuid, egg]));
+  const overlaps = ruleOverlaps(settings.egg_rules, editingRule?.id ?? null, {
+    eggs: sourceEggs,
+    allowed_eggs: targetEggs,
+    options: ruleOptions,
+  });
+  const eggName = (uuid: string) => eggItems.get(uuid)?.name ?? `Deleted egg ${uuid.slice(0, 8)}`;
+  const pictureEggs = appearanceEggs(settings.egg_rules, settings.egg_appearance);
 
   return (
     <Stack gap='lg'>
@@ -297,6 +363,86 @@ export default function AdminEggChangerPage() {
                 </Table.Tbody>
               </Table>
             </Table.ScrollContainer>
+          )}
+        </Stack>
+      </Card>
+
+      <Card padding='lg' radius='md' withBorder>
+        <Stack gap='md'>
+          <div>
+            <Title order={4} fw={600}>
+              Icons and Banners
+            </Title>
+            <Text size='xs' c='dimmed'>
+              Optional pictures for the eggs servers can switch to, shown on the egg cards and in the switch dialog.
+              Eggs without them keep the plain look.
+            </Text>
+          </div>
+
+          {pictureEggs.length === 0 ? (
+            <Text c='dimmed' size='sm' ta='center' py='lg'>
+              Add an egg rule first: its target eggs show up here.
+            </Text>
+          ) : (
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing='sm'>
+              {pictureEggs.map((uuid) => {
+                const egg = eggItems.get(uuid);
+                const pictures = settings.egg_appearance[uuid] ?? { icon: null, banner: null };
+                const set = [pictures.icon && 'Icon', pictures.banner && 'Banner'].filter(Boolean).join(' and ');
+                return (
+                  <Paper key={uuid} withBorder radius='md' p='sm'>
+                    <Group wrap='nowrap' gap='sm'>
+                      <Avatar
+                        src={pictures.icon}
+                        name={eggName(uuid)}
+                        size='md'
+                        radius='md'
+                        imageProps={{ referrerPolicy: 'no-referrer', draggable: false }}
+                      />
+                      <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
+                        <Text fw={600} size='sm' truncate='end'>
+                          {eggName(uuid)}
+                        </Text>
+                        <Text size='xs' c='dimmed' truncate='end'>
+                          {egg ? `${egg.nest_name} · ` : ''}
+                          {set || 'No icon or banner'}
+                        </Text>
+                      </Stack>
+                      <Box w={96} visibleFrom='xs' style={{ flexShrink: 0 }}>
+                        <EggImage src={pictures.banner} ratio={BANNER_RATIO} radius='sm' />
+                      </Box>
+                      {canWrite && (
+                        <Group gap='xs' wrap='nowrap'>
+                          {egg && (
+                            <Button
+                              size='xs'
+                              variant='light'
+                              color='gray'
+                              aria-label={`Edit the icon and banner of ${egg.name}`}
+                              onClick={() => setAppearanceEgg(egg)}
+                            >
+                              <FontAwesomeIcon icon={faImage} />
+                            </Button>
+                          )}
+                          {set && (
+                            <Button
+                              size='xs'
+                              variant='subtle'
+                              color='red'
+                              aria-label={`Remove the icon and banner of ${eggName(uuid)}`}
+                              loading={clearingEgg === uuid}
+                              onClick={() => clearAppearance(uuid)}
+                            >
+                              <FontAwesomeIcon icon={faTrash} />
+                            </Button>
+                          )}
+                        </Group>
+                      )}
+                    </Group>
+                  </Paper>
+                );
+              })}
+            </SimpleGrid>
           )}
         </Stack>
       </Card>
@@ -381,6 +527,38 @@ export default function AdminEggChangerPage() {
             When several rules allow the same switch, every option enabled in any of them applies.
           </Text>
 
+          {overlaps.length > 0 && (
+            <Alert
+              color='yellow'
+              variant='light'
+              icon={<FontAwesomeIcon icon={faTriangleExclamation} />}
+              title='Another rule already allows some of these switches'
+            >
+              <Stack gap='xs'>
+                <Text size='sm'>
+                  For a switch both rules allow, the forced options of both apply: whatever either rule forces always
+                  happens, so the stricter rule wins. Saving is still possible.
+                </Text>
+                <List size='sm' spacing={4}>
+                  {overlaps.map((overlap) => (
+                    <List.Item key={overlap.rule.id}>
+                      {overlap.pairs
+                        .slice(0, 3)
+                        .map(([source, target]) => `${eggName(source)} → ${eggName(target)}`)
+                        .join(', ')}
+                      {overlap.pairs.length > 3 && ` and ${overlap.pairs.length - 3} more`}
+                      {overlap.addedOptions.length > 0
+                        ? `: the other rule adds ${overlap.addedOptions
+                            .map((key) => OPTION_FIELDS.find((field) => field.key === key)?.label ?? key)
+                            .join(', ')}.`
+                        : '.'}
+                    </List.Item>
+                  ))}
+                </List>
+              </Stack>
+            </Alert>
+          )}
+
           <ModalFooter>
             <Button variant='default' onClick={() => setRuleModalOpen(false)}>
               Cancel
@@ -395,6 +573,13 @@ export default function AdminEggChangerPage() {
           </ModalFooter>
         </Stack>
       </Modal>
+
+      <EggAppearanceModal
+        egg={appearanceEgg}
+        value={(appearanceEgg && settings.egg_appearance[appearanceEgg.uuid]) || { icon: null, banner: null }}
+        onClose={() => setAppearanceEgg(null)}
+        onSaved={appearanceSaved}
+      />
 
       <ConfirmationModal
         opened={!!ruleToDelete}

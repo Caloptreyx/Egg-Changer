@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TargetEgg } from '../frontend/src/api/client.ts';
 import {
+  backupName,
   type ChangeChoices,
   changeEffects,
   defaultStartup,
@@ -10,6 +11,14 @@ import {
   nestsOf,
   switchBlocker,
 } from '../frontend/src/lib/eggs.ts';
+
+const NO_OPTIONS: TargetEgg['options'] = {
+  force_startup_update: false,
+  force_reinstall: false,
+  force_truncate: false,
+  reassign_allocations: true,
+  force_backup: false,
+};
 
 function egg(overrides: Partial<TargetEgg> = {}): TargetEgg {
   return {
@@ -28,7 +37,9 @@ function egg(overrides: Partial<TargetEgg> = {}): TargetEgg {
     ],
     allow_custom_startup_command: false,
     deployment_allocations: 0,
-    options: { force_startup_update: false, force_reinstall: false, force_truncate: false, reassign_allocations: true },
+    options: NO_OPTIONS,
+    icon: null,
+    banner: null,
     ...overrides,
   };
 }
@@ -42,6 +53,7 @@ function choices(overrides: Partial<ChangeChoices> = {}): ChangeChoices {
     image: 'ghcr.io/yolks:debian',
     reinstall: false,
     wipe: false,
+    backup: false,
     ...overrides,
   };
 }
@@ -113,7 +125,7 @@ test('keeping the startup command, a custom command and an unchanged image are d
 
 test('rule options override the choices like the backend does', () => {
   const forced = egg({
-    options: { force_startup_update: true, force_reinstall: true, force_truncate: true, reassign_allocations: true },
+    options: { ...NO_OPTIONS, force_startup_update: true, force_reinstall: true, force_truncate: true },
     deployment_allocations: 2,
   });
   const effects = changeEffects(current, forced, choices({ updateStartup: false, reinstall: false, wipe: false }));
@@ -130,7 +142,7 @@ test('wiping only happens together with a reinstall', () => {
   assert.equal(effect(noReinstall, 'install').tone, 'info');
 
   const truncateRuleOnly = egg({
-    options: { force_startup_update: false, force_reinstall: false, force_truncate: true, reassign_allocations: true },
+    options: { ...NO_OPTIONS, force_truncate: true },
   });
   assert.equal(effect(changeEffects(current, truncateRuleOnly, choices()), 'install').tone, 'info');
   assert.equal(effect(changeEffects(current, truncateRuleOnly, choices({ reinstall: true })), 'install').tone, 'danger');
@@ -142,9 +154,42 @@ test('wiping only happens together with a reinstall', () => {
 
 test('a reinstall the rule forces still needs the core reinstall permission', () => {
   const forced = egg({
-    options: { force_startup_update: false, force_reinstall: true, force_truncate: false, reassign_allocations: true },
+    options: { ...NO_OPTIONS, force_reinstall: true },
   });
-  assert.match(switchBlocker(forced, false) ?? '', /reinstall permission/);
-  assert.equal(switchBlocker(forced, true), null);
-  assert.equal(switchBlocker(egg(), false), null);
+  assert.match(switchBlocker(forced, false, null) ?? '', /reinstall permission/);
+  assert.equal(switchBlocker(forced, true, null), null);
+  assert.equal(switchBlocker(egg(), false, null), null);
+});
+
+test('a backup the rule forces blocks the switch when the user cannot create one', () => {
+  const forced = egg({ options: { ...NO_OPTIONS, force_backup: true } });
+  const full = 'This server has reached its backup limit. Delete a backup first.';
+  assert.equal(switchBlocker(forced, true, full), `This switch always creates a backup first. ${full}`);
+  assert.equal(switchBlocker(forced, true, null), null);
+  // an optional backup never blocks
+  assert.equal(switchBlocker(egg(), true, full), null);
+});
+
+test('the backup step is listed right after the egg, forced or chosen', () => {
+  assert.ok(!changeEffects(current, egg(), choices()).some((e) => e.key === 'backup'));
+
+  const chosen = changeEffects(current, egg(), choices({ backup: true }));
+  assert.deepEqual(
+    chosen.slice(0, 2).map((e) => e.key),
+    ['egg', 'backup'],
+  );
+  assert.equal(effect(chosen, 'backup').forced, false);
+  assert.match(effect(chosen, 'backup').text, /Nothing changes until it has finished successfully/);
+
+  const forced = changeEffects(current, egg({ options: { ...NO_OPTIONS, force_backup: true } }), choices());
+  assert.equal(effect(forced, 'backup').forced, true);
+});
+
+test('the backup is named after the new egg and the local time, within core’s 255 characters', () => {
+  const at = new Date(2026, 10, 22, 9, 5);
+  assert.equal(backupName('Paper', at), 'Before egg change to Paper (2026-11-22 09:05)');
+
+  const long = backupName('x'.repeat(400), at);
+  assert.equal(long.length, 255);
+  assert.ok(long.endsWith(' (2026-11-22 09:05)'));
 });

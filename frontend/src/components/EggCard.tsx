@@ -1,5 +1,7 @@
 import { faArrowRightArrowLeft } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { CardSection } from '@mantine/core';
+import { useState } from 'react';
 import Button from '@/elements/buttons/Button.tsx';
 import Avatar from '@/elements/data-display/Avatar.tsx';
 import Badge from '@/elements/data-display/Badge.tsx';
@@ -9,6 +11,8 @@ import Group from '@/elements/layout/Group.tsx';
 import Stack from '@/elements/layout/Stack.tsx';
 import Text from '@/elements/typography/Text.tsx';
 import type { TargetEgg } from '../api/client.ts';
+import { BANNER_RATIO } from '../lib/images.ts';
+import EggImage from './EggImage.tsx';
 
 interface EggCardProps {
   egg: TargetEgg;
@@ -20,11 +24,24 @@ interface EggCardProps {
 
 export default function EggCard({ egg, disabled, blocker, onSelect }: EggCardProps) {
   const { options } = egg;
+  const [failedBanner, setFailedBanner] = useState<string | null>(null);
+  const banner = egg.banner && egg.banner !== failedBanner ? egg.banner : null;
 
   return (
     <Card padding='lg' h='100%'>
+      {banner && (
+        <CardSection mb='md'>
+          <EggImage src={banner} ratio={BANNER_RATIO} onError={() => setFailedBanner(banner)} />
+        </CardSection>
+      )}
       <Group wrap='nowrap' gap='sm' align='flex-start'>
-        <Avatar name={egg.name} size='md' radius='md' />
+        <Avatar
+          src={egg.icon}
+          name={egg.name}
+          size='md'
+          radius='md'
+          imageProps={{ referrerPolicy: 'no-referrer', draggable: false }}
+        />
         <Stack gap={4} style={{ minWidth: 0 }}>
           <Text fw={600} lineClamp={2} style={{ overflowWrap: 'anywhere' }}>
             {egg.name}

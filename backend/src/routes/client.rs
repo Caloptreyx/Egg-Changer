@@ -1,6 +1,6 @@
 use crate::{
     allocations,
-    settings::{EggChangerSettingsData, EggRuleOptions},
+    settings::{EggAppearance, EggChangerSettingsData, EggRuleOptions},
 };
 use axum::http::StatusCode;
 use garde::Validate;
@@ -17,6 +17,7 @@ use shared::{
         server::{
             GetServer, GetServerActivityLogger, Server, ServerInstallOptions, UpdateServerOptions,
         },
+        server_backup::{ServerBackup, ServerBackupKind},
         server_variable::ServerVariable,
         user::GetPermissionManager,
     },
@@ -54,6 +55,9 @@ pub struct TargetEgg {
     pub deployment_allocations: usize,
     /// Options of the rules allowing this switch.
     pub options: EggRuleOptions,
+    /// `icon` and `banner`, https URLs or null.
+    #[serde(flatten)]
+    pub appearance: EggAppearance,
 }
 
 /// The server's egg before switching.
@@ -63,12 +67,17 @@ pub struct CurrentEgg {
     pub name: compact_str::CompactString,
     pub description: Option<compact_str::CompactString>,
     pub nest_name: compact_str::CompactString,
+    /// `icon` and `banner` of the server's own egg, https URLs or null.
+    #[serde(flatten)]
+    pub appearance: EggAppearance,
 }
 
 #[derive(ToSchema, Serialize)]
 pub struct IndexResponse {
     pub current_egg: CurrentEgg,
     pub eggs: Vec<TargetEgg>,
+    /// Why the user can't create a backup before switching, or null when they can.
+    pub backup_unavailable: Option<String>,
 }
 
 #[derive(ToSchema, Validate, Deserialize)]
@@ -97,6 +106,11 @@ pub struct ChangeEggPayload {
     #[serde(default)]
     #[garde(skip)]
     pub truncate_directory: bool,
+    /// A backup of this server that finished successfully within the last hour, made right
+    /// before switching. Required when the rule forces a backup.
+    #[serde(default)]
+    #[garde(skip)]
+    pub backup_uuid: Option<uuid::Uuid>,
 }
 
 #[derive(ToSchema, Serialize)]
@@ -129,14 +143,15 @@ fn default_startup(egg: &NestEgg) -> Option<&compact_str::CompactString> {
 }
 
 /// Core permissions a switch needs besides `eggchanger.change`. The extension's permission never
-/// stands in for a core one, even when an egg rule forces the reinstall. The new egg's default
-/// startup command and first docker image come with the switch; choosing anything else is what the
-/// core startup routes guard.
+/// stands in for a core one, even when an egg rule forces the reinstall or the backup. The new
+/// egg's default startup command and first docker image come with the switch; choosing anything
+/// else is what the core startup routes guard.
 fn core_permissions(
     reinstall: bool,
     keep_startup: bool,
     startup_default: bool,
     image_default: bool,
+    backup: bool,
 ) -> Vec<&'static str> {
     let mut permissions = Vec::new();
     if reinstall {
@@ -148,7 +163,75 @@ fn core_permissions(
     if !image_default {
         permissions.push("startup.docker-image");
     }
+    if backup {
+        permissions.push("backups.create");
+    }
     permissions
+}
+
+/// Why the user can't create a backup before switching, or `None` when they can. The backup itself
+/// goes through core's backup create route, which checks the same permission and limit (and may
+/// free a slot by deleting backups its retention rules consider expendable).
+fn backup_unavailable(can_create: bool, limit: i32, count: i64) -> Option<&'static str> {
+    if !can_create {
+        Some("Creating a backup needs the backup create permission.")
+    } else if limit <= 0 {
+        Some("This server can't have backups.")
+    } else if count >= i64::from(limit) {
+        Some("This server has reached its backup limit. Delete a backup first.")
+    } else {
+        None
+    }
+}
+
+/// How long after finishing a backup still counts as taken right before a switch.
+const BACKUP_MAX_AGE_MINUTES: i64 = 60;
+
+/// What a switch checks about the backup made before it.
+#[derive(Clone, Copy, Debug)]
+struct BackupCheck {
+    /// A backup of the server's files, not of a database instance.
+    server_files: bool,
+    completed: Option<chrono::NaiveDateTime>,
+    successful: bool,
+    /// Deleted or being deleted.
+    deleted: bool,
+}
+
+impl From<&ServerBackup> for BackupCheck {
+    fn from(backup: &ServerBackup) -> Self {
+        Self {
+            server_files: backup.kind == ServerBackupKind::Server,
+            completed: backup.completed,
+            successful: backup.successful,
+            deleted: backup.deleted.is_some() || backup.deleting.is_some(),
+        }
+    }
+}
+
+/// Why `backup` (`None`: not a backup of this server) can't vouch for a switch at `now`, or `None`
+/// when it finished successfully within [`BACKUP_MAX_AGE_MINUTES`]. Only then may the switch, and
+/// with it any reinstall or wipe, run.
+fn backup_problem(backup: Option<BackupCheck>, now: chrono::NaiveDateTime) -> Option<&'static str> {
+    let Some(backup) = backup else {
+        return Some("The backup was not found, so the egg was not changed.");
+    };
+    if backup.deleted {
+        return Some("The backup was deleted, so the egg was not changed.");
+    }
+    if !backup.server_files {
+        return Some("The backup must be a backup of the server's files.");
+    }
+    let Some(completed) = backup.completed else {
+        return Some("The backup hasn't finished yet, so the egg was not changed.");
+    };
+    if !backup.successful {
+        return Some("The backup failed, so the egg was not changed.");
+    }
+    if now - completed > chrono::TimeDelta::minutes(BACKUP_MAX_AGE_MINUTES) {
+        return Some("The backup is more than an hour old. Create a new one to switch.");
+    }
+    None
 }
 
 fn named(
@@ -213,8 +296,15 @@ mod get_index {
                     0
                 },
                 options: target.options,
+                appearance: config.appearance(egg.uuid),
             });
         }
+
+        let backup_reason = backup_unavailable(
+            permissions.has_server_permission("backups.create").is_ok(),
+            server.backup_limit,
+            ServerBackup::count_by_server_uuid(&state.database, server.uuid).await?,
+        );
 
         ApiResponse::new_serialized(IndexResponse {
             current_egg: CurrentEgg {
@@ -222,8 +312,10 @@ mod get_index {
                 name: server.egg.name.clone(),
                 description: server.egg.description.clone(),
                 nest_name: server.nest.name.clone(),
+                appearance: config.appearance(server.egg.uuid),
             },
             eggs,
+            backup_unavailable: backup_reason.map(String::from),
         })
         .ok()
     }
@@ -293,6 +385,13 @@ mod post_change {
                 .with_status(StatusCode::CONFLICT)
                 .ok();
         }
+        if options.force_backup && data.backup_uuid.is_none() {
+            return ApiResponse::error(
+                "Switching to the selected egg needs a backup of the server first.",
+            )
+            .with_status(StatusCode::BAD_REQUEST)
+            .ok();
+        }
 
         let Some(egg) = NestEgg::by_uuid_optional(&state.database, data.egg_uuid).await? else {
             return ApiResponse::error("egg not found")
@@ -325,10 +424,30 @@ mod post_change {
             .as_ref()
             .is_none_or(|image| egg.docker_images.values().next() == Some(image));
 
-        for permission in
-            core_permissions(reinstall, data.keep_startup, startup_default, image_default)
-        {
+        for permission in core_permissions(
+            reinstall,
+            data.keep_startup,
+            startup_default,
+            image_default,
+            data.backup_uuid.is_some(),
+        ) {
             permissions.has_server_permission(permission)?;
+        }
+
+        // The backup was made through core's backup route before this request, so by now it has
+        // finished: nothing below, reinstall and wipe included, runs unless it succeeded.
+        let backup_uuid = data.backup_uuid;
+        if let Some(backup_uuid) = backup_uuid {
+            let backup =
+                ServerBackup::by_server_uuid_uuid(&state.database, server.uuid, backup_uuid).await?;
+            if let Some(problem) = backup_problem(
+                backup.as_ref().map(BackupCheck::from),
+                chrono::Utc::now().naive_utc(),
+            ) {
+                return ApiResponse::error(problem)
+                    .with_status(StatusCode::CONFLICT)
+                    .ok();
+            }
         }
 
         let startup = match chosen_startup {
@@ -530,6 +649,7 @@ mod post_change {
                         "reinstall": reinstall,
                         "truncate_directory": truncate_directory,
                         "kept_startup": kept_startup,
+                        "backup_uuid": backup_uuid,
                         "options": options,
                         "allocations": assigned
                             .iter()
@@ -587,29 +707,31 @@ pub fn router(state: &State) -> OpenApiRouter<State> {
 
 #[cfg(test)]
 mod tests {
-    use super::core_permissions;
+    use super::{
+        BACKUP_MAX_AGE_MINUTES, BackupCheck, backup_problem, backup_unavailable, core_permissions,
+    };
 
     #[test]
     fn any_reinstall_needs_the_core_reinstall_permission() {
         assert_eq!(
-            core_permissions(true, false, true, true),
+            core_permissions(true, false, true, true, false),
             ["settings.install"]
         );
-        assert!(core_permissions(false, false, true, true).is_empty());
+        assert!(core_permissions(false, false, true, true, false).is_empty());
     }
 
     #[test]
     fn non_default_or_kept_startup_needs_the_core_startup_permission() {
         assert_eq!(
-            core_permissions(false, false, false, true),
+            core_permissions(false, false, false, true, false),
             ["startup.command"]
         );
         assert_eq!(
-            core_permissions(false, true, true, true),
+            core_permissions(false, true, true, true, false),
             ["startup.command"]
         );
         assert_eq!(
-            core_permissions(true, true, false, true),
+            core_permissions(true, true, false, true, false),
             ["settings.install", "startup.command"]
         );
     }
@@ -617,16 +739,86 @@ mod tests {
     #[test]
     fn non_default_image_needs_the_core_image_permission() {
         assert_eq!(
-            core_permissions(false, false, true, false),
+            core_permissions(false, false, true, false, false),
             ["startup.docker-image"]
         );
         assert_eq!(
-            core_permissions(true, true, false, false),
+            core_permissions(true, true, false, false, false),
             [
                 "settings.install",
                 "startup.command",
                 "startup.docker-image"
             ]
+        );
+    }
+
+    #[test]
+    fn a_backup_needs_the_core_backup_permission() {
+        assert_eq!(
+            core_permissions(false, false, true, true, true),
+            ["backups.create"]
+        );
+        assert_eq!(
+            core_permissions(true, false, true, true, true),
+            ["settings.install", "backups.create"]
+        );
+    }
+
+    #[test]
+    fn the_backup_option_follows_the_core_permission_and_limit() {
+        assert_eq!(backup_unavailable(true, 3, 2), None);
+        assert!(
+            backup_unavailable(false, 3, 0)
+                .unwrap()
+                .contains("permission")
+        );
+        assert!(backup_unavailable(true, 0, 0).unwrap().contains("can't have"));
+        assert!(backup_unavailable(true, 3, 3).unwrap().contains("limit"));
+        assert!(backup_unavailable(true, 3, 4).unwrap().contains("limit"));
+    }
+
+    fn at(minutes: i64) -> chrono::NaiveDateTime {
+        chrono::DateTime::from_timestamp(1_800_000_000, 0)
+            .unwrap()
+            .naive_utc()
+            + chrono::TimeDelta::minutes(minutes)
+    }
+
+    #[test]
+    fn only_a_fresh_successful_backup_of_the_server_files_lets_the_switch_run() {
+        let now = at(BACKUP_MAX_AGE_MINUTES);
+        let finished = BackupCheck {
+            server_files: true,
+            completed: Some(at(0)),
+            successful: true,
+            deleted: false,
+        };
+        assert_eq!(backup_problem(Some(finished), now), None);
+        assert_eq!(backup_problem(Some(finished), at(1)), None);
+
+        for (backup, reason) in [
+            (None, "not found"),
+            (Some(BackupCheck { completed: None, ..finished }), "hasn't finished"),
+            (Some(BackupCheck { successful: false, ..finished }), "failed"),
+            (Some(BackupCheck { deleted: true, ..finished }), "deleted"),
+            (Some(BackupCheck { server_files: false, ..finished }), "server's files"),
+        ] {
+            let problem = backup_problem(backup, now);
+            assert!(problem.is_some_and(|p| p.contains(reason)), "{backup:?}: {problem:?}");
+        }
+
+        // a backup that is still running has `successful: false` too; not finishing comes first
+        let running = BackupCheck {
+            completed: None,
+            successful: false,
+            ..finished
+        };
+        assert!(backup_problem(Some(running), now).unwrap().contains("hasn't finished"));
+
+        assert!(
+            backup_problem(Some(finished), at(BACKUP_MAX_AGE_MINUTES + 1))
+                .unwrap()
+                .contains("more than an hour old")
         );
     }
 }

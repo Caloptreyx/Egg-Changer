@@ -138,7 +138,13 @@ export default function EggChanger({ variant }: EggChangerProps) {
 
         <Paper withBorder radius='md' p='md'>
           <Group wrap='nowrap' gap='md' align='flex-start'>
-            <Avatar name={index.current_egg.name} size='lg' radius='md' />
+            <Avatar
+              src={index.current_egg.icon}
+              name={index.current_egg.name}
+              size='lg'
+              radius='md'
+              imageProps={{ referrerPolicy: 'no-referrer', draggable: false }}
+            />
             <Stack gap={4} style={{ minWidth: 0, flex: 1 }}>
               <Text size='xs' c='dimmed' fw={600} tt='uppercase'>
                 Current egg
@@ -214,7 +220,7 @@ export default function EggChanger({ variant }: EggChangerProps) {
                     key={egg.uuid}
                     egg={egg}
                     disabled={busy}
-                    blocker={switchBlocker(egg, canReinstall)}
+                    blocker={switchBlocker(egg, canReinstall, index.backup_unavailable)}
                     onSelect={() => {
                       setSelected(egg);
                       setModalOpen(true);
@@ -231,6 +237,7 @@ export default function EggChanger({ variant }: EggChangerProps) {
             opened={modalOpen}
             egg={selected}
             current={index.current_egg}
+            backupUnavailable={index.backup_unavailable}
             onClose={() => setModalOpen(false)}
             onBusyChange={setBusy}
             onChanged={changed}

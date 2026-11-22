@@ -21,3 +21,5 @@ garde = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }

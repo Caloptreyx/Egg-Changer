@@ -1,14 +1,17 @@
-use crate::settings::{EggChangerSettingsData, EggRule, EggRuleOptions, Placement};
+use crate::settings::{
+    EggAppearance, EggChangerSettingsData, EggRule, EggRuleOptions, Placement, parse_image_url,
+};
 use axum::{extract::Path, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use shared::{
     GetState, State,
     models::{
-        BaseModel, admin_activity::GetAdminActivityLogger, nest::Nest, nest_egg::NestEgg,
+        BaseModel, ByUuid, admin_activity::GetAdminActivityLogger, nest::Nest, nest_egg::NestEgg,
         user::GetPermissionManager,
     },
     response::{ApiResponse, ApiResponseResult},
 };
+use std::collections::BTreeMap;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -27,6 +30,8 @@ pub struct EggItem {
 pub struct SettingsResponse {
     pub egg_rules: Vec<EggRule>,
     pub placement: Placement,
+    /// Icons and banners by egg UUID.
+    pub egg_appearance: BTreeMap<uuid::Uuid, EggAppearance>,
     pub eggs: Vec<EggItem>,
 }
 
@@ -42,6 +47,31 @@ pub struct EggRulePayload {
     pub allowed_eggs: Vec<uuid::Uuid>,
     #[serde(default)]
     pub options: EggRuleOptions,
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct EggAppearancePayload {
+    /// Square icon: an https URL of at most 1024 characters; null or blank removes it.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Wide 3:1 banner: an https URL of at most 1024 characters; null or blank removes it.
+    #[serde(default)]
+    pub banner: Option<String>,
+}
+
+impl EggAppearancePayload {
+    /// The normalised appearance, or an error response naming the rejected URL.
+    fn into_appearance(self) -> Result<EggAppearance, ApiResponse> {
+        fn image(label: &str, value: Option<String>) -> Result<Option<String>, ApiResponse> {
+            parse_image_url(value.as_deref().unwrap_or_default())
+                .map_err(|reason| ApiResponse::error(format!("The {label} URL {reason}.")))
+        }
+
+        Ok(EggAppearance {
+            icon: image("icon", self.icon)?,
+            banner: image("banner", self.banner)?,
+        })
+    }
 }
 
 impl EggRulePayload {
@@ -111,11 +141,13 @@ mod get_settings {
         let ext_settings: &EggChangerSettingsData = settings.find_extension_settings()?;
         let egg_rules = ext_settings.egg_rules.clone();
         let placement = ext_settings.placement;
+        let egg_appearance = ext_settings.egg_appearance.clone();
         drop(settings);
 
         ApiResponse::new_serialized(SettingsResponse {
             egg_rules,
             placement,
+            egg_appearance,
             eggs: get_all_eggs(&state).await?,
         })
         .ok()
@@ -275,11 +307,62 @@ mod delete_egg_rule {
     }
 }
 
+mod put_egg_appearance {
+    use super::*;
+
+    #[utoipa::path(put, path = "/egg-appearance/{egg}", responses(
+        (status = OK, body = inline(EggAppearance)),
+        (status = BAD_REQUEST, body = shared::ApiError),
+        (status = NOT_FOUND, body = shared::ApiError),
+    ), params(("egg" = uuid::Uuid, description = "The egg ID")), request_body = inline(EggAppearancePayload))]
+    pub async fn route(
+        state: GetState,
+        permissions: GetPermissionManager,
+        activity_logger: GetAdminActivityLogger,
+        Path(egg_uuid): Path<uuid::Uuid>,
+        shared::Payload(data): shared::Payload<EggAppearancePayload>,
+    ) -> ApiResponseResult {
+        permissions.has_admin_permission("extensions.eggchanger.write")?;
+
+        let appearance = data.into_appearance()?;
+
+        // clearing stays possible after the egg was deleted
+        if !appearance.is_empty()
+            && NestEgg::by_uuid_optional(&state.database, egg_uuid)
+                .await?
+                .is_none()
+        {
+            return ApiResponse::error("egg not found")
+                .with_status(StatusCode::NOT_FOUND)
+                .ok();
+        }
+
+        let mut settings = state.settings.get_mut().await?;
+        let ext_settings: &mut EggChangerSettingsData = settings.find_mut_extension_settings()?;
+        ext_settings.set_appearance(egg_uuid, appearance.clone());
+        settings.save().await?;
+
+        activity_logger
+            .log(
+                "settings:eggchanger:egg-appearance.update",
+                serde_json::json!({
+                    "egg": egg_uuid,
+                    "icon": appearance.icon,
+                    "banner": appearance.banner,
+                }),
+            )
+            .await;
+
+        ApiResponse::new_serialized(appearance).ok()
+    }
+}
+
 pub fn router(state: &State) -> OpenApiRouter<State> {
     OpenApiRouter::new()
         .routes(routes!(get_settings::route, put_settings::route))
         .routes(routes!(post_egg_rule::route))
         .routes(routes!(put_egg_rule::route))
         .routes(routes!(delete_egg_rule::route))
+        .routes(routes!(put_egg_appearance::route))
         .with_state(state.clone())
 }

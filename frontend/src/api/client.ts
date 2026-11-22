@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { axiosInstance } from '@/api/axios.ts';
 import type { Placement } from '../lib/placement.ts';
 
@@ -15,6 +16,7 @@ export interface EggRuleOptions {
   force_reinstall: boolean;
   force_truncate: boolean;
   reassign_allocations: boolean;
+  force_backup: boolean;
 }
 
 export interface EggRule {
@@ -24,9 +26,19 @@ export interface EggRule {
   options: EggRuleOptions;
 }
 
+/** Optional pictures of an egg: https URLs, rendered only as `<img src>`. */
+export interface EggAppearance {
+  /** Square icon. */
+  icon: string | null;
+  /** Wide banner, shown at 3:1. */
+  banner: string | null;
+}
+
 export interface AdminSettingsResponse {
   egg_rules: EggRule[];
   placement: Placement;
+  /** By egg UUID; eggs without pictures are missing. */
+  egg_appearance: Record<string, EggAppearance>;
   eggs: EggItem[];
 }
 
@@ -37,7 +49,7 @@ export interface NamedValue {
   value: string;
 }
 
-export interface TargetEgg {
+export interface TargetEgg extends EggAppearance {
   uuid: string;
   name: string;
   description: string | null;
@@ -50,7 +62,7 @@ export interface TargetEgg {
   options: EggRuleOptions;
 }
 
-export interface CurrentEgg {
+export interface CurrentEgg extends EggAppearance {
   uuid: string;
   name: string;
   description: string | null;
@@ -60,6 +72,8 @@ export interface CurrentEgg {
 export interface EggChangerIndex {
   current_egg: CurrentEgg;
   eggs: TargetEgg[];
+  /** Why the user can't create a backup before switching, or null when they can. */
+  backup_unavailable: string | null;
 }
 
 export interface ChangeEggPayload {
@@ -69,6 +83,8 @@ export interface ChangeEggPayload {
   keep_startup: boolean;
   reinstall: boolean;
   truncate_directory: boolean;
+  /** A backup made right before switching; it must have finished successfully. */
+  backup_uuid: string | null;
 }
 
 export interface ChangeEggResponse {
@@ -97,6 +113,24 @@ export async function updateEggRule(id: string, payload: EggRulePayload): Promis
 
 export async function deleteEggRule(id: string): Promise<void> {
   await axiosInstance.delete(`${ADMIN_BASE}/egg-rules/${id}`);
+}
+
+export async function updateEggAppearance(eggUuid: string, payload: EggAppearance): Promise<EggAppearance> {
+  const { data } = await axiosInstance.put(`${ADMIN_BASE}/egg-appearance/${eggUuid}`, payload);
+  return data;
+}
+
+const uploadResponseSchema = z.object({ assets: z.array(z.object({ url: z.string() })).min(1) });
+
+/**
+ * Uploads an image to the panel's own asset storage (Admin → Assets, folder `egg-changer`) and
+ * returns its public URL. Needs the core `assets.upload` permission.
+ */
+export async function uploadImageAsset(file: File, name: string): Promise<string> {
+  const form = new FormData();
+  form.append('files', file, name);
+  const { data } = await axiosInstance.putForm('/api/admin/assets', form, { params: { directory: 'egg-changer' } });
+  return uploadResponseSchema.parse(data).assets[0].url;
 }
 
 export async function getEggChangerIndex(serverUuid: string): Promise<EggChangerIndex> {
