@@ -35,7 +35,8 @@ Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.10`
 ## What you get
 
 - **Egg rules**: servers on a rule's source eggs may switch to its target eggs, picked from a
-  nest/egg tree. A server whose egg matches no rule can't switch. Select the same eggs on both
+  nest/egg tree with search, *Select all matches* and a tick per nest to select or clear the
+  whole nest. A server whose egg matches no rule can't switch. Select the same eggs on both
   sides to let servers switch freely within a group.
 - **Rule options**, applied when a server switches to one of the rule's target eggs:
   - **Require a new startup command** - users can't hold on to their old startup command; one of
@@ -76,8 +77,13 @@ Extensions require the `:heavy` panel image - see the
 **Admin → Extensions → Egg Changer → Configure**
 
 1. **Egg Rules** - add at least one rule. *Servers on* are the eggs the rule applies to, *Can switch
-   to* are the eggs those servers may switch to, *Options* control what a switch does.
-2. **Icons and Banners** - optional pictures for each egg servers can switch to.
+   to* are the eggs those servers may switch to, *Options* control what a switch does. Each rule
+   shows one line per nest ("Minecraft: All 12 eggs", "Games: Valheim, Rust and 40 more");
+   *Show all eggs* lists every egg, grouped by nest. From four rules on, a search box finds the
+   rules that use an egg or nest.
+2. **Icons and Banners** - optional pictures for each egg servers can switch to, grouped by nest
+   in sections you can fold. Big nests start folded; search by egg or nest name, filter by nest
+   and by whether an egg has pictures, with counts.
 3. **Placement** - *Settings page* (default: a section at the bottom of each server's Settings
    page), *Own page* (a "Change Egg" entry in the server sidebar, and no Settings section) or
    *Both*. Users see a change after reloading the panel. Egg Configurations can hide or reorder the

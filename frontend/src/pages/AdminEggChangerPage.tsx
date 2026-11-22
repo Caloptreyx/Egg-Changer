@@ -1,35 +1,24 @@
-import {
-  faArrowRight,
-  faEdit,
-  faImage,
-  faPlus,
-  faTrash,
-  faTriangleExclamation,
-} from '@fortawesome/free-solid-svg-icons';
+import { faMagnifyingGlass, faPlus, faTriangleExclamation } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   Alert,
-  Badge,
-  Box,
   Card,
   Divider,
   Group,
   List,
-  Paper,
   SegmentedControl,
   SimpleGrid,
   Stack,
   Switch,
-  Table,
   Text,
   Title,
 } from '@mantine/core';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { httpErrorToHuman } from '@/api/axios.ts';
 import AlertError from '@/elements/alerts/AlertError.tsx';
 import Button from '@/elements/buttons/Button.tsx';
-import Avatar from '@/elements/data-display/Avatar.tsx';
 import Spinner from '@/elements/feedback/Spinner.tsx';
+import TextInput from '@/elements/input/TextInput.tsx';
 import ConfirmationModal from '@/elements/modals/ConfirmationModal.tsx';
 import { Modal, ModalFooter } from '@/elements/modals/Modal.tsx';
 import { useAdminCan } from '@/plugins/usePermissions.ts';
@@ -48,11 +37,16 @@ import {
   updatePlacement,
 } from '../api/client.ts';
 import EggAppearanceModal from '../components/EggAppearanceModal.tsx';
-import EggImage from '../components/EggImage.tsx';
+import EggPictureList from '../components/EggPictureList.tsx';
+import EggRuleRow from '../components/EggRuleRow.tsx';
 import EggTreePicker from '../components/EggTreePicker.tsx';
-import { appearanceEggs, BANNER_RATIO } from '../lib/images.ts';
+import { deletedEggName, filterRules } from '../lib/eggGroups.ts';
+import { appearanceEggs } from '../lib/images.ts';
 import { PLACEMENTS, type Placement, placementOf } from '../lib/placement.ts';
 import { ruleOverlaps } from '../lib/rules.ts';
+
+/** From this many rules on, the list gets a search box. */
+const RULE_SEARCH_FROM = 4;
 
 const PLACEMENT_FIELDS: Record<Placement, { label: string; description: string }> = {
   settings: {
@@ -134,6 +128,7 @@ export default function AdminEggChangerPage() {
   const [savingPlacement, setSavingPlacement] = useState(false);
   const [appearanceEgg, setAppearanceEgg] = useState<EggItem | null>(null);
   const [clearingEgg, setClearingEgg] = useState<string | null>(null);
+  const [ruleQuery, setRuleQuery] = useState('');
 
   const load = async () => {
     try {
@@ -150,14 +145,6 @@ export default function AdminEggChangerPage() {
   useEffect(() => {
     load();
   }, []);
-
-  const eggNames = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const egg of settings?.eggs ?? []) {
-      map.set(egg.uuid, `${egg.name} (${egg.nest_name})`);
-    }
-    return map;
-  }, [settings?.eggs]);
 
   const openRuleModal = (rule: EggRule | null) => {
     setEditingRule(rule);
@@ -238,16 +225,6 @@ export default function AdminEggChangerPage() {
     }
   };
 
-  const eggBadges = (uuids: string[], color: string) => (
-    <Group gap='xs'>
-      {uuids.map((uuid) => (
-        <Badge key={uuid} size='sm' variant='light' color={eggNames.has(uuid) ? color : 'gray'}>
-          {eggNames.get(uuid) ?? `Deleted egg ${uuid.slice(0, 8)}`}
-        </Badge>
-      ))}
-    </Group>
-  );
-
   const header = (
     <div>
       <Title order={3} fw={700}>
@@ -287,8 +264,9 @@ export default function AdminEggChangerPage() {
     allowed_eggs: targetEggs,
     options: ruleOptions,
   });
-  const eggName = (uuid: string) => eggItems.get(uuid)?.name ?? `Deleted egg ${uuid.slice(0, 8)}`;
+  const eggName = (uuid: string) => eggItems.get(uuid)?.name ?? deletedEggName(uuid);
   const pictureEggs = appearanceEggs(settings.egg_rules, settings.egg_appearance);
+  const visibleRules = filterRules(settings.egg_rules, settings.eggs, ruleQuery);
 
   return (
     <Stack gap='lg'>
@@ -313,56 +291,46 @@ export default function AdminEggChangerPage() {
             )}
           </Group>
 
+          {settings.egg_rules.length >= RULE_SEARCH_FROM && (
+            <Group gap='xs'>
+              <TextInput
+                aria-label='Search rules'
+                placeholder='Search rules by egg or nest'
+                leftSection={<FontAwesomeIcon icon={faMagnifyingGlass} />}
+                value={ruleQuery}
+                onChange={(e) => setRuleQuery(e.currentTarget.value)}
+                style={{ flex: '1 1 240px', maxWidth: 420 }}
+              />
+              <Text size='xs' c='dimmed'>
+                {visibleRules.length === settings.egg_rules.length
+                  ? `${settings.egg_rules.length} rules`
+                  : `${visibleRules.length} of ${settings.egg_rules.length} rules`}
+              </Text>
+            </Group>
+          )}
+
           {settings.egg_rules.length === 0 ? (
             <Text c='dimmed' size='sm' ta='center' py='lg'>
               No egg rules yet, so no server can switch eggs.
             </Text>
+          ) : visibleRules.length === 0 ? (
+            <Text c='dimmed' size='sm' ta='center' py='lg'>
+              No rule uses an egg or nest matching your search.
+            </Text>
           ) : (
-            <Table.ScrollContainer minWidth={600}>
-              <Table verticalSpacing='sm' striped highlightOnHover>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>Servers on</Table.Th>
-                    <Table.Th w={32} />
-                    <Table.Th>Can switch to</Table.Th>
-                    <Table.Th>Options</Table.Th>
-                    {canWrite && <Table.Th w={110}>Actions</Table.Th>}
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {settings.egg_rules.map((rule) => (
-                    <Table.Tr key={rule.id}>
-                      <Table.Td>{eggBadges(rule.eggs, 'blue')}</Table.Td>
-                      <Table.Td>
-                        <FontAwesomeIcon icon={faArrowRight} />
-                      </Table.Td>
-                      <Table.Td>{eggBadges(rule.allowed_eggs, 'teal')}</Table.Td>
-                      <Table.Td>
-                        <Group gap='xs'>
-                          {OPTION_FIELDS.filter((field) => rule.options[field.key]).map((field) => (
-                            <Badge key={field.key} size='sm' variant='outline' color='gray'>
-                              {field.badge}
-                            </Badge>
-                          ))}
-                        </Group>
-                      </Table.Td>
-                      {canWrite && (
-                        <Table.Td>
-                          <Group gap='xs' wrap='nowrap'>
-                            <Button size='xs' variant='light' color='gray' onClick={() => openRuleModal(rule)}>
-                              <FontAwesomeIcon icon={faEdit} />
-                            </Button>
-                            <Button size='xs' variant='subtle' color='red' onClick={() => setRuleToDelete(rule)}>
-                              <FontAwesomeIcon icon={faTrash} />
-                            </Button>
-                          </Group>
-                        </Table.Td>
-                      )}
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
+            <Stack gap='xs'>
+              {visibleRules.map((rule) => (
+                <EggRuleRow
+                  key={rule.id}
+                  rule={rule}
+                  eggs={settings.eggs}
+                  optionBadges={OPTION_FIELDS.filter((field) => rule.options[field.key]).map((field) => field.badge)}
+                  canWrite={canWrite}
+                  onEdit={() => openRuleModal(rule)}
+                  onDelete={() => setRuleToDelete(rule)}
+                />
+              ))}
+            </Stack>
           )}
         </Stack>
       </Card>
@@ -384,65 +352,15 @@ export default function AdminEggChangerPage() {
               Add an egg rule first: its target eggs show up here.
             </Text>
           ) : (
-            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing='sm'>
-              {pictureEggs.map((uuid) => {
-                const egg = eggItems.get(uuid);
-                const pictures = settings.egg_appearance[uuid] ?? { icon: null, banner: null };
-                const set = [pictures.icon && 'Icon', pictures.banner && 'Banner'].filter(Boolean).join(' and ');
-                return (
-                  <Paper key={uuid} withBorder radius='md' p='sm'>
-                    <Group wrap='nowrap' gap='sm'>
-                      <Avatar
-                        src={pictures.icon}
-                        name={eggName(uuid)}
-                        size='md'
-                        radius='md'
-                        imageProps={{ referrerPolicy: 'no-referrer', draggable: false }}
-                      />
-                      <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
-                        <Text fw={600} size='sm' truncate='end'>
-                          {eggName(uuid)}
-                        </Text>
-                        <Text size='xs' c='dimmed' truncate='end'>
-                          {egg ? `${egg.nest_name} · ` : ''}
-                          {set || 'No icon or banner'}
-                        </Text>
-                      </Stack>
-                      <Box w={96} visibleFrom='xs' style={{ flexShrink: 0 }}>
-                        <EggImage src={pictures.banner} ratio={BANNER_RATIO} radius='sm' />
-                      </Box>
-                      {canWrite && (
-                        <Group gap='xs' wrap='nowrap'>
-                          {egg && (
-                            <Button
-                              size='xs'
-                              variant='light'
-                              color='gray'
-                              aria-label={`Edit the icon and banner of ${egg.name}`}
-                              onClick={() => setAppearanceEgg(egg)}
-                            >
-                              <FontAwesomeIcon icon={faImage} />
-                            </Button>
-                          )}
-                          {set && (
-                            <Button
-                              size='xs'
-                              variant='subtle'
-                              color='red'
-                              aria-label={`Remove the icon and banner of ${eggName(uuid)}`}
-                              loading={clearingEgg === uuid}
-                              onClick={() => clearAppearance(uuid)}
-                            >
-                              <FontAwesomeIcon icon={faTrash} />
-                            </Button>
-                          )}
-                        </Group>
-                      )}
-                    </Group>
-                  </Paper>
-                );
-              })}
-            </SimpleGrid>
+            <EggPictureList
+              uuids={pictureEggs}
+              eggs={settings.eggs}
+              appearance={settings.egg_appearance}
+              canWrite={canWrite}
+              clearingEgg={clearingEgg}
+              onEdit={setAppearanceEgg}
+              onClear={clearAppearance}
+            />
           )}
         </Stack>
       </Card>
