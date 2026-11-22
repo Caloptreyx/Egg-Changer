@@ -1,6 +1,6 @@
 import { faArrowRight, faChevronDown, faChevronUp, faEdit, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Badge, Group, Paper, SimpleGrid, Stack, Text } from '@mantine/core';
+import { Badge, Flex, Group, Paper, SimpleGrid, Stack, Text } from '@mantine/core';
 import { type ReactNode, useMemo, useState } from 'react';
 import Button from '@/elements/buttons/Button.tsx';
 import type { EggItem, EggRule } from '../api/client.ts';
@@ -126,14 +126,14 @@ export default function EggRuleRow({ rule, eggs, optionBadges, canWrite, onEdit,
         </Stack>
 
         {canWrite && (
-          <Group gap='xs' wrap='nowrap' style={{ flexShrink: 0 }}>
+          <Flex direction={{ base: 'column', sm: 'row' }} gap='xs' style={{ flexShrink: 0 }}>
             <Button size='xs' variant='light' color='gray' aria-label='Edit rule' onClick={onEdit}>
               <FontAwesomeIcon icon={faEdit} />
             </Button>
             <Button size='xs' variant='subtle' color='red' aria-label='Delete rule' onClick={onDelete}>
               <FontAwesomeIcon icon={faTrash} />
             </Button>
-          </Group>
+          </Flex>
         )}
       </Group>
     </Paper>
