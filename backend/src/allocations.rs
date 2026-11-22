@@ -330,6 +330,12 @@ async fn pick(
     }
 }
 
+/// Whether a server holding `current` allocations may be given `new` more, the way the core
+/// self-assign route applies `allocation_limit` (the primary allocation counts).
+pub fn within_limit(current: i64, new: usize, limit: i32) -> bool {
+    current.saturating_add(new as i64) <= i64::from(limit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +354,14 @@ mod tests {
             ip: ip(ip_last),
             port,
         }
+    }
+
+    #[test]
+    fn allocation_limit_counts_existing_and_new() {
+        assert!(within_limit(1, 2, 3));
+        assert!(!within_limit(1, 3, 3));
+        assert!(!within_limit(1, 1, 0));
+        assert!(!within_limit(4, 1, 3));
     }
 
     fn rule(mode: Mode, variable: Option<&str>) -> Additional {

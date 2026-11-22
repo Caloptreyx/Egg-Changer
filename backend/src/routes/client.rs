@@ -128,6 +128,23 @@ fn default_startup(egg: &NestEgg) -> Option<&compact_str::CompactString> {
         .or_else(|| egg.startup_commands.values().next())
 }
 
+/// Core permissions a switch needs besides `eggchanger.change`. The extension's permission never
+/// stands in for a core one, even when an egg rule forces the reinstall.
+fn core_permissions(
+    reinstall: bool,
+    keep_startup: bool,
+    startup_predefined: bool,
+) -> Vec<&'static str> {
+    let mut permissions = Vec::new();
+    if reinstall {
+        permissions.push("settings.install");
+    }
+    if keep_startup || !startup_predefined {
+        permissions.push("startup.command");
+    }
+    permissions
+}
+
 fn named(
     map: &indexmap::IndexMap<compact_str::CompactString, compact_str::CompactString>,
 ) -> Vec<NamedValue> {
@@ -243,11 +260,6 @@ mod post_change {
                 .ok();
         };
 
-        // A reinstall the rule forces is part of the switch an admin allowed; one the user opts
-        // into needs the reinstall permission like the core reinstall does.
-        if data.reinstall && !options.force_reinstall {
-            permissions.has_server_permission("settings.install")?;
-        }
         let reinstall = data.reinstall || options.force_reinstall;
         let truncate_directory = reinstall && (data.truncate_directory || options.force_truncate);
 
@@ -288,18 +300,33 @@ mod post_change {
         )
         .await?;
 
-        let startup = match data.startup {
-            _ if data.keep_startup => server.startup.clone(),
+        // A kept command goes through the same checks as a custom one: the new egg may not allow
+        // it, and only users who may change the startup command can keep or write their own.
+        let chosen_startup = if data.keep_startup {
+            Some(server.startup.clone())
+        } else {
+            data.startup
+        };
+        let startup_predefined = chosen_startup
+            .as_ref()
+            .is_none_or(|command| egg.startup_commands.values().any(|c| c == command));
+
+        for permission in core_permissions(reinstall, data.keep_startup, startup_predefined) {
+            permissions.has_server_permission(permission)?;
+        }
+
+        let startup = match chosen_startup {
             Some(command) => {
-                let predefined = egg.startup_commands.values().any(|c| *c == command);
                 let custom_allowed = egg_configuration
                     .config_startup
                     .as_ref()
                     .is_some_and(|c| c.allow_custom_startup_command);
-                if !predefined && !custom_allowed {
-                    return ApiResponse::error(
-                        "Custom startup commands are not enabled for the selected egg.",
-                    )
+                if !startup_predefined && !custom_allowed {
+                    return ApiResponse::error(if data.keep_startup {
+                        "The selected egg doesn't allow custom startup commands, so the current one can't be kept."
+                    } else {
+                        "Custom startup commands are not enabled for the selected egg."
+                    })
                     .with_status(StatusCode::EXPECTATION_FAILED)
                     .ok();
                 }
@@ -349,147 +376,190 @@ mod post_change {
 
         let egg_variables = NestEggVariable::all_by_egg_uuid(&state.database, egg.uuid).await?;
 
-        let mut transaction = state.database.write().begin().await?;
+        let kept_startup = data.keep_startup;
 
-        // Two concurrent changes must not both pass the rule check against the old egg.
-        let locked_egg: uuid::Uuid =
-            sqlx::query_scalar("SELECT egg_uuid FROM servers WHERE uuid = $1 FOR UPDATE")
-                .bind(server.uuid)
-                .fetch_one(&mut *transaction)
-                .await?;
-        if locked_egg != from_egg.uuid {
-            transaction.rollback().await?;
-            return ApiResponse::error(
-                "The server's egg was changed in the meantime, reload and try again.",
-            )
-            .with_status(StatusCode::CONFLICT)
-            .ok();
-        }
-
-        server
-            .update_with_transaction(
-                &state,
-                UpdateServerOptions {
-                    egg_uuid: Some(egg.uuid),
-                    startup: Some(startup.clone()),
-                    image: Some(image.clone()),
-                    ..Default::default()
-                },
-                &mut transaction,
-            )
-            .await?;
-
-        // variables start from the new egg's defaults
-        sqlx::query("DELETE FROM server_variables WHERE server_uuid = $1")
-            .bind(server.uuid)
-            .execute(&mut *transaction)
-            .await?;
-
-        if let Some(deployment) = &deployment {
-            for allocation in &deployment.new_allocations {
-                let inserted = sqlx::query(
-                    "INSERT INTO server_allocations (server_uuid, allocation_uuid) VALUES ($1, $2)",
-                )
-                .bind(server.uuid)
-                .bind(allocation.uuid)
-                .execute(&mut *transaction)
-                .await;
-
-                if let Err(err) = inserted {
-                    transaction.rollback().await?;
-                    if DatabaseError::from(err).is_unique_violation() {
-                        return ApiResponse::error(
-                            "An allocation was taken while switching, please try again.",
+        // Run to completion even if the client disconnects: once the switch is committed, the
+        // node sync and the reinstall must follow.
+        tokio::spawn(async move {
+            let new_allocations = deployment.as_ref().map_or(0, |d| d.new_allocations.len());
+            // Same lock the core self-assign route holds while it counts and adds allocations.
+            let allocations_lock = if new_allocations > 0 {
+                Some(
+                    state
+                        .cache
+                        .lock(
+                            format!("servers::{}::allocations", server.uuid),
+                            Some(30),
+                            Some(5000),
                         )
-                        .with_status(StatusCode::CONFLICT)
-                        .ok();
-                    }
-                    return ApiResponse::error("failed to assign allocations")
-                        .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .ok();
-                }
-            }
-
-            for (env, value) in &deployment.variables {
-                if let Some(variable) = egg_variables.iter().find(|v| v.env_variable == *env) {
-                    ServerVariable::create_with_transaction(
-                        &mut transaction,
-                        server.uuid,
-                        variable.uuid,
-                        value,
-                    )
-                    .await?;
-                }
-            }
-        }
-
-        transaction.commit().await?;
-        invalidate_cache_keys(&state.database, &server.cache_invalidation_keys()).await;
-
-        let assigned: Vec<AssignedAllocation> = deployment
-            .iter()
-            .flat_map(|d| &d.new_allocations)
-            .map(|a| AssignedAllocation {
-                ip: a.ip.ip().to_string(),
-                port: a.port,
-            })
-            .collect();
-
-        activity_logger
-            .log(
-                "server:eggchanger.change",
-                serde_json::json!({
-                    "from_egg": { "uuid": from_egg.uuid, "name": from_egg.name },
-                    "to_egg": { "uuid": egg.uuid, "name": egg.name },
-                    "startup": startup,
-                    "image": image,
-                    "reinstall": reinstall,
-                    "truncate_directory": truncate_directory,
-                    "kept_startup": data.keep_startup,
-                    "options": options,
-                    "allocations": assigned
-                        .iter()
-                        .map(|a| format!("{}:{}", a.ip, a.port))
-                        .collect::<Vec<_>>(),
-                }),
-            )
-            .await;
-
-        // re-fetch so the node gets the new nest, allocations and variables
-        let server = Server::by_uuid(&state.database, server.uuid).await?;
-
-        if reinstall {
-            if let Err(err) = server.clone().sync(&state).await {
-                tracing::warn!(server = %server.uuid, "failed to sync server after egg change: {err:#}");
-                return ApiResponse::error(
-                    "The egg was changed, but the node could not be reached to reinstall the server.",
+                        .await?,
                 )
-                .with_status(StatusCode::BAD_GATEWAY)
+            } else {
+                None
+            };
+
+            let mut transaction = state.database.write().begin().await?;
+
+            // Two concurrent changes must not both pass the rule check against the old egg.
+            let (locked_egg, allocation_limit): (uuid::Uuid, i32) = sqlx::query_as(
+                "SELECT egg_uuid, allocation_limit FROM servers WHERE uuid = $1 FOR UPDATE",
+            )
+            .bind(server.uuid)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if locked_egg != from_egg.uuid {
+                transaction.rollback().await?;
+                return ApiResponse::error(
+                    "The server's egg was changed in the meantime, reload and try again.",
+                )
+                .with_status(StatusCode::CONFLICT)
                 .ok();
             }
 
+            if new_allocations > 0 {
+                let current: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM server_allocations WHERE server_uuid = $1",
+                )
+                .bind(server.uuid)
+                .fetch_one(&mut *transaction)
+                .await?;
+                if !allocations::within_limit(current, new_allocations, allocation_limit) {
+                    transaction.rollback().await?;
+                    return ApiResponse::error(format!(
+                        "The selected egg needs {new_allocations} more allocation(s), which would exceed this server's limit of {allocation_limit}."
+                    ))
+                    .with_status(StatusCode::EXPECTATION_FAILED)
+                    .ok();
+                }
+            }
+
             server
-                .install_with_options(
+                .update_with_transaction(
                     &state,
-                    ServerInstallOptions {
-                        truncate_directory,
+                    UpdateServerOptions {
+                        egg_uuid: Some(egg.uuid),
+                        startup: Some(startup.clone()),
+                        image: Some(image.clone()),
                         ..Default::default()
                     },
+                    &mut transaction,
                 )
                 .await?;
-        } else {
-            server.batch_sync(&state).await;
-        }
 
-        ApiResponse::new_serialized(ChangeEggResponse {
-            egg: EggSummary {
-                uuid: egg.uuid,
-                name: egg.name,
-            },
-            reinstalling: reinstall,
-            allocations: assigned,
+            // variables start from the new egg's defaults
+            sqlx::query("DELETE FROM server_variables WHERE server_uuid = $1")
+                .bind(server.uuid)
+                .execute(&mut *transaction)
+                .await?;
+
+            if let Some(deployment) = &deployment {
+                for allocation in &deployment.new_allocations {
+                    let inserted = sqlx::query(
+                        "INSERT INTO server_allocations (server_uuid, allocation_uuid) VALUES ($1, $2)",
+                    )
+                    .bind(server.uuid)
+                    .bind(allocation.uuid)
+                    .execute(&mut *transaction)
+                    .await;
+
+                    if let Err(err) = inserted {
+                        transaction.rollback().await?;
+                        if DatabaseError::from(err).is_unique_violation() {
+                            return ApiResponse::error(
+                                "An allocation was taken while switching, please try again.",
+                            )
+                            .with_status(StatusCode::CONFLICT)
+                            .ok();
+                        }
+                        return ApiResponse::error("failed to assign allocations")
+                            .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .ok();
+                    }
+                }
+
+                for (env, value) in &deployment.variables {
+                    if let Some(variable) = egg_variables.iter().find(|v| v.env_variable == *env) {
+                        ServerVariable::create_with_transaction(
+                            &mut transaction,
+                            server.uuid,
+                            variable.uuid,
+                            value,
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            transaction.commit().await?;
+            drop(allocations_lock);
+            invalidate_cache_keys(&state.database, &server.cache_invalidation_keys()).await;
+
+            let assigned: Vec<AssignedAllocation> = deployment
+                .iter()
+                .flat_map(|d| &d.new_allocations)
+                .map(|a| AssignedAllocation {
+                    ip: a.ip.ip().to_string(),
+                    port: a.port,
+                })
+                .collect();
+
+            activity_logger
+                .log(
+                    "server:eggchanger.change",
+                    serde_json::json!({
+                        "from_egg": { "uuid": from_egg.uuid, "name": from_egg.name },
+                        "to_egg": { "uuid": egg.uuid, "name": egg.name },
+                        "startup": startup,
+                        "image": image,
+                        "reinstall": reinstall,
+                        "truncate_directory": truncate_directory,
+                        "kept_startup": kept_startup,
+                        "options": options,
+                        "allocations": assigned
+                            .iter()
+                            .map(|a| format!("{}:{}", a.ip, a.port))
+                            .collect::<Vec<_>>(),
+                    }),
+                )
+                .await;
+
+            // re-fetch so the node gets the new nest, allocations and variables
+            let server = Server::by_uuid(&state.database, server.uuid).await?;
+
+            if reinstall {
+                if let Err(err) = server.clone().sync(&state).await {
+                    tracing::warn!(server = %server.uuid, "failed to sync server after egg change: {err:#}");
+                    return ApiResponse::error(
+                        "The egg was changed, but the node could not be reached to reinstall the server.",
+                    )
+                    .with_status(StatusCode::BAD_GATEWAY)
+                    .ok();
+                }
+
+                server
+                    .install_with_options(
+                        &state,
+                        ServerInstallOptions {
+                            truncate_directory,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            } else {
+                server.batch_sync(&state).await;
+            }
+
+            ApiResponse::new_serialized(ChangeEggResponse {
+                egg: EggSummary {
+                    uuid: egg.uuid,
+                    name: egg.name,
+                },
+                reinstalling: reinstall,
+                allocations: assigned,
+            })
+            .ok()
         })
-        .ok()
+        .await?
     }
 }
 
@@ -497,4 +567,25 @@ pub fn router(state: &State) -> OpenApiRouter<State> {
     OpenApiRouter::new()
         .routes(routes!(get_index::route, post_change::route))
         .with_state(state.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::core_permissions;
+
+    #[test]
+    fn any_reinstall_needs_the_core_reinstall_permission() {
+        assert_eq!(core_permissions(true, false, true), ["settings.install"]);
+        assert!(core_permissions(false, false, true).is_empty());
+    }
+
+    #[test]
+    fn custom_or_kept_startup_needs_the_core_startup_permission() {
+        assert_eq!(core_permissions(false, false, false), ["startup.command"]);
+        assert_eq!(core_permissions(false, true, true), ["startup.command"]);
+        assert_eq!(
+            core_permissions(true, true, false),
+            ["settings.install", "startup.command"]
+        );
+    }
 }

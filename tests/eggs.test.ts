@@ -8,6 +8,7 @@ import {
   type Effect,
   filterEggs,
   nestsOf,
+  switchBlocker,
 } from '../frontend/src/lib/eggs.ts';
 
 function egg(overrides: Partial<TargetEgg> = {}): TargetEgg {
@@ -137,4 +138,13 @@ test('wiping only happens together with a reinstall', () => {
   const reinstall = changeEffects(current, egg(), choices({ reinstall: true }));
   assert.equal(effect(reinstall, 'install').tone, 'warning');
   assert.match(effect(reinstall, 'install').text, /Files are kept/);
+});
+
+test('a reinstall the rule forces still needs the core reinstall permission', () => {
+  const forced = egg({
+    options: { force_startup_update: false, force_reinstall: true, force_truncate: false, reassign_allocations: true },
+  });
+  assert.match(switchBlocker(forced, false) ?? '', /reinstall permission/);
+  assert.equal(switchBlocker(forced, true), null);
+  assert.equal(switchBlocker(egg(), false), null);
 });

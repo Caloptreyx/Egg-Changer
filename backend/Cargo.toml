@@ -20,3 +20,4 @@ utoipa-axum = { workspace = true }
 garde = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
+tokio = { workspace = true }

@@ -64,6 +64,8 @@ export default function ChangeEggModal({
   const server = useServerStore((state) => state.server);
   const setServer = useServerStore((state) => state.setServer);
   const canReinstall = useServerCan('settings.install');
+  // Keeping the current command or writing a custom one needs the core startup permission.
+  const canStartupCommand = useServerCan('startup.command');
   const fullScreen = useMediaQuery('(max-width: 36em)');
 
   const [updateStartup, setUpdateStartup] = useState(true);
@@ -89,7 +91,8 @@ export default function ChangeEggModal({
   const effects = changeEffects({ eggName: current.name, image: server.image }, egg, choices);
   const busyStatus = reinstalling && server.status ? (BUSY_STATUS[server.status] ?? 'is busy') : null;
 
-  const showStartupPicker = updatingStartup && (egg.startup_commands.length > 1 || egg.allow_custom_startup_command);
+  const customStartup = egg.allow_custom_startup_command && canStartupCommand;
+  const showStartupPicker = updatingStartup && (egg.startup_commands.length > 1 || customStartup);
   const presetValue = egg.startup_commands.some((c) => c.value === startup) ? startup : null;
 
   const close = () => {
@@ -169,7 +172,7 @@ export default function ChangeEggModal({
         </Group>
 
         <Stack gap='sm'>
-          {!egg.options.force_startup_update && (
+          {!egg.options.force_startup_update && canStartupCommand && (
             <Switch
               label={`Use ${egg.name}'s startup command`}
               description='Turn off to keep the current startup command.'
@@ -181,16 +184,16 @@ export default function ChangeEggModal({
 
           {showStartupPicker && (
             <Select
-              label={egg.allow_custom_startup_command ? 'Startup preset' : 'Startup command'}
+              label={customStartup ? 'Startup preset' : 'Startup command'}
               data={egg.startup_commands.map((c) => ({ value: c.value, label: c.name }))}
               value={presetValue}
-              placeholder={egg.allow_custom_startup_command ? 'Custom' : undefined}
+              placeholder={customStartup ? 'Custom' : undefined}
               disabled={submitting}
               onChange={(value) => value && setStartup(value)}
             />
           )}
 
-          {egg.allow_custom_startup_command && updatingStartup && (
+          {customStartup && updatingStartup && (
             <TextArea
               label='Startup command'
               autosize
@@ -212,7 +215,7 @@ export default function ChangeEggModal({
             />
           )}
 
-          {(canReinstall || egg.options.force_reinstall) && (
+          {canReinstall && (
             <Switch
               label='Reinstall the server'
               description={

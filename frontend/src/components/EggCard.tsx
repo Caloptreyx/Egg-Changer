@@ -13,10 +13,12 @@ import type { TargetEgg } from '../api/client.ts';
 interface EggCardProps {
   egg: TargetEgg;
   disabled: boolean;
+  /** Shown instead of allowing the switch, e.g. when a core permission is missing. */
+  blocker: string | null;
   onSelect: () => void;
 }
 
-export default function EggCard({ egg, disabled, onSelect }: EggCardProps) {
+export default function EggCard({ egg, disabled, blocker, onSelect }: EggCardProps) {
   const { options } = egg;
 
   return (
@@ -61,11 +63,16 @@ export default function EggCard({ egg, disabled, onSelect }: EggCardProps) {
       </Group>
 
       <Box mt='auto' pt='md'>
+        {blocker && (
+          <Text size='xs' c='dimmed' mb='xs'>
+            {blocker}
+          </Text>
+        )}
         <Button
           fullWidth
           variant='light'
           leftSection={<FontAwesomeIcon icon={faArrowRightArrowLeft} />}
-          disabled={disabled}
+          disabled={disabled || !!blocker}
           onClick={onSelect}
           aria-label={`Switch to ${egg.name}`}
         >

@@ -19,7 +19,7 @@ import Title from '@/elements/typography/Title.tsx';
 import { useServerCan } from '@/plugins/usePermissions.ts';
 import { useServerStore } from '@/stores/server.ts';
 import { type ChangeEggResponse, type EggChangerIndex, getEggChangerIndex, type TargetEgg } from '../api/client.ts';
-import { filterEggs, nestsOf } from '../lib/eggs.ts';
+import { filterEggs, nestsOf, switchBlocker } from '../lib/eggs.ts';
 import ChangeEggModal from './ChangeEggModal.tsx';
 import EggCard from './EggCard.tsx';
 
@@ -40,6 +40,7 @@ export default function EggChanger({ variant }: EggChangerProps) {
   const navigate = useNavigate();
   const server = useServerStore((state) => state.server);
   const canChange = useServerCan('eggchanger.change');
+  const canReinstall = useServerCan('settings.install');
 
   const [index, setIndex] = useState<EggChangerIndex | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -213,6 +214,7 @@ export default function EggChanger({ variant }: EggChangerProps) {
                     key={egg.uuid}
                     egg={egg}
                     disabled={busy}
+                    blocker={switchBlocker(egg, canReinstall)}
                     onSelect={() => {
                       setSelected(egg);
                       setModalOpen(true);

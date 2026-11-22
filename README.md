@@ -3,7 +3,7 @@
 A [Calagopus Panel](https://calagopus.com) extension that lets users switch their server to another
 egg themselves, for example from Minecraft Java to Minecraft Bedrock, within rules you set.
 
-Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.8`
+Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.10`
 
 ## What your users get
 
@@ -63,8 +63,10 @@ Extensions require the `:heavy` panel image - see the
    page.
 3. Give subusers the `eggchanger.change` permission where wanted. Owners and admins always have it.
 
-Permissions: server `eggchanger.change`, which covers reinstalls and wipes a rule forces; choosing
-to reinstall also needs `settings.install`. Admin `extensions.eggchanger.read|write`.
+Permissions: server `eggchanger.change`, plus the core permission for each part of a switch that
+core guards: `settings.install` for any reinstall or wipe (also when a rule forces it), and
+`startup.command` for keeping the current startup command or writing a custom one. New allocations
+count against the server's allocation limit. Admin `extensions.eggchanger.read|write`.
 
 ## API
 

@@ -57,6 +57,17 @@ export function effectiveChoices(egg: Pick<TargetEgg, 'options'>, choices: Chang
   return { updatingStartup, reinstalling, wiping };
 }
 
+/**
+ * Why the user can't switch to `egg` at all, or null when they can. Like the backend, a reinstall
+ * the rule forces still needs the core `settings.install` permission.
+ */
+export function switchBlocker(egg: Pick<TargetEgg, 'options'>, canReinstall: boolean): string | null {
+  if (egg.options.force_reinstall && !canReinstall) {
+    return 'This switch always reinstalls the server, which needs the reinstall permission.';
+  }
+  return null;
+}
+
 export type EffectTone = 'info' | 'warning' | 'danger';
 
 export interface Effect {
