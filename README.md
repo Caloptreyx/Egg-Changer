@@ -64,9 +64,11 @@ Extensions require the `:heavy` panel image - see the
 3. Give subusers the `eggchanger.change` permission where wanted. Owners and admins always have it.
 
 Permissions: server `eggchanger.change`, plus the core permission for each part of a switch that
-core guards: `settings.install` for any reinstall or wipe (also when a rule forces it), and
-`startup.command` for keeping the current startup command or writing a custom one. New allocations
-count against the server's allocation limit. Admin `extensions.eggchanger.read|write`.
+core guards: `settings.install` for any reinstall or wipe (also when a rule forces it),
+`startup.command` for keeping the current startup command or choosing any command other than the
+new egg's default, and `startup.docker-image` for choosing any image other than the new egg's
+first. New allocations count against the server's allocation limit. Admin
+`extensions.eggchanger.read|write`.
 
 ## API
 

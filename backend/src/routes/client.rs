@@ -129,18 +129,24 @@ fn default_startup(egg: &NestEgg) -> Option<&compact_str::CompactString> {
 }
 
 /// Core permissions a switch needs besides `eggchanger.change`. The extension's permission never
-/// stands in for a core one, even when an egg rule forces the reinstall.
+/// stands in for a core one, even when an egg rule forces the reinstall. The new egg's default
+/// startup command and first docker image come with the switch; choosing anything else is what the
+/// core startup routes guard.
 fn core_permissions(
     reinstall: bool,
     keep_startup: bool,
-    startup_predefined: bool,
+    startup_default: bool,
+    image_default: bool,
 ) -> Vec<&'static str> {
     let mut permissions = Vec::new();
     if reinstall {
         permissions.push("settings.install");
     }
-    if keep_startup || !startup_predefined {
+    if keep_startup || !startup_default {
         permissions.push("startup.command");
+    }
+    if !image_default {
+        permissions.push("startup.docker-image");
     }
     permissions
 }
@@ -301,7 +307,8 @@ mod post_change {
         .await?;
 
         // A kept command goes through the same checks as a custom one: the new egg may not allow
-        // it, and only users who may change the startup command can keep or write their own.
+        // it, and only users who may change the startup command can keep it or pick anything but
+        // the new egg's default.
         let chosen_startup = if data.keep_startup {
             Some(server.startup.clone())
         } else {
@@ -310,8 +317,17 @@ mod post_change {
         let startup_predefined = chosen_startup
             .as_ref()
             .is_none_or(|command| egg.startup_commands.values().any(|c| c == command));
+        let startup_default = chosen_startup
+            .as_ref()
+            .is_none_or(|command| default_startup(&egg) == Some(command));
+        let image_default = data
+            .image
+            .as_ref()
+            .is_none_or(|image| egg.docker_images.values().next() == Some(image));
 
-        for permission in core_permissions(reinstall, data.keep_startup, startup_predefined) {
+        for permission in
+            core_permissions(reinstall, data.keep_startup, startup_default, image_default)
+        {
             permissions.has_server_permission(permission)?;
         }
 
@@ -575,17 +591,42 @@ mod tests {
 
     #[test]
     fn any_reinstall_needs_the_core_reinstall_permission() {
-        assert_eq!(core_permissions(true, false, true), ["settings.install"]);
-        assert!(core_permissions(false, false, true).is_empty());
+        assert_eq!(
+            core_permissions(true, false, true, true),
+            ["settings.install"]
+        );
+        assert!(core_permissions(false, false, true, true).is_empty());
     }
 
     #[test]
-    fn custom_or_kept_startup_needs_the_core_startup_permission() {
-        assert_eq!(core_permissions(false, false, false), ["startup.command"]);
-        assert_eq!(core_permissions(false, true, true), ["startup.command"]);
+    fn non_default_or_kept_startup_needs_the_core_startup_permission() {
         assert_eq!(
-            core_permissions(true, true, false),
+            core_permissions(false, false, false, true),
+            ["startup.command"]
+        );
+        assert_eq!(
+            core_permissions(false, true, true, true),
+            ["startup.command"]
+        );
+        assert_eq!(
+            core_permissions(true, true, false, true),
             ["settings.install", "startup.command"]
+        );
+    }
+
+    #[test]
+    fn non_default_image_needs_the_core_image_permission() {
+        assert_eq!(
+            core_permissions(false, false, true, false),
+            ["startup.docker-image"]
+        );
+        assert_eq!(
+            core_permissions(true, true, false, false),
+            [
+                "settings.install",
+                "startup.command",
+                "startup.docker-image"
+            ]
         );
     }
 }

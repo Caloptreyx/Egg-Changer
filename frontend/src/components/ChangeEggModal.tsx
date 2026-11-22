@@ -64,8 +64,10 @@ export default function ChangeEggModal({
   const server = useServerStore((state) => state.server);
   const setServer = useServerStore((state) => state.setServer);
   const canReinstall = useServerCan('settings.install');
-  // Keeping the current command or writing a custom one needs the core startup permission.
+  // Anything but the new egg's default command needs the core startup permission: keeping the
+  // current one, another preset or a custom one. Likewise a non-default image needs the image one.
   const canStartupCommand = useServerCan('startup.command');
+  const canDockerImage = useServerCan('startup.docker-image');
   const fullScreen = useMediaQuery('(max-width: 36em)');
 
   const [updateStartup, setUpdateStartup] = useState(true);
@@ -92,7 +94,7 @@ export default function ChangeEggModal({
   const busyStatus = reinstalling && server.status ? (BUSY_STATUS[server.status] ?? 'is busy') : null;
 
   const customStartup = egg.allow_custom_startup_command && canStartupCommand;
-  const showStartupPicker = updatingStartup && (egg.startup_commands.length > 1 || customStartup);
+  const showStartupPicker = updatingStartup && canStartupCommand && (egg.startup_commands.length > 1 || customStartup);
   const presetValue = egg.startup_commands.some((c) => c.value === startup) ? startup : null;
 
   const close = () => {
@@ -205,7 +207,7 @@ export default function ChangeEggModal({
             />
           )}
 
-          {egg.docker_images.length > 1 && (
+          {egg.docker_images.length > 1 && canDockerImage && (
             <Select
               label='Docker image'
               data={egg.docker_images.map((i) => ({ value: i.value, label: i.name }))}
