@@ -65,6 +65,20 @@ Package name: `dev.caloptreyx.eggchanger` · Requires panel `>=1.2.10`
   and new egg, startup command, image, reinstall options, the backup made first and newly
   assigned allocations.
 
+## Screenshots
+
+**Change Egg page**: the current egg and the eggs this server may switch to.
+
+![Change Egg page with an available egg card](docs/screenshots/change-egg-page.png)
+
+**Switch dialog**: options set by the host, the backup first, and what the switch will do.
+
+![Switch dialog with the What happens list](docs/screenshots/switch-dialog.png)
+
+**Admin settings**: egg rules, icons and banners, and placement.
+
+![Egg Changer admin settings](docs/screenshots/admin-settings.png)
+
 ## Installation
 
 Download `dev_caloptreyx_eggchanger.c7s.zip` and either upload it under **Admin → Extensions** or
