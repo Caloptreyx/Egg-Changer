@@ -291,11 +291,14 @@ async fn pick(
         Need::Range { ip, start, end } => {
             let picked = match ip {
                 Some(ip) => {
-                    NodeAllocation::get_random_ip(database, node_uuid, &ip, start, end, 1, exclude)
-                        .await
+                    NodeAllocation::get_random_ip(
+                        database, node_uuid, &ip, start, end, 1, exclude, None,
+                    )
+                    .await
                 }
                 None => {
-                    NodeAllocation::get_random(database, node_uuid, start, end, 1, exclude).await
+                    NodeAllocation::get_random(database, node_uuid, start, end, 1, exclude, None)
+                        .await
                 }
             };
             let no_free = || {
@@ -317,7 +320,7 @@ async fn pick(
                 .ok_or_else(no_free)
         }
         Need::Exact { ip, port } => {
-            NodeAllocation::by_node_uuid_ip_port_unused(database, node_uuid, &ip, port, exclude)
+            NodeAllocation::by_node_uuid_ip_port_unused(database, node_uuid, &ip, port, exclude, None)
                 .await?
                 .map(|allocation| Alloc::from(&allocation))
                 .ok_or_else(|| {
